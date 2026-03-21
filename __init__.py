@@ -7,6 +7,7 @@ import tempfile
 import traceback
 import datetime
 import json
+import uuid
 from aqt import mw
 from aqt.qt import *
 from aqt.utils import showInfo, showWarning
@@ -517,11 +518,48 @@ class PDFExportDialog(QDialog):
         deck_group.setLayout(dg)
         root.addWidget(deck_group)
 
-        self.tabs = QTabWidget()
+        content_frame = QFrame()
+        content_layout = QHBoxLayout(content_frame)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(12)
+
+        self.sidebar = QListWidget()
+        self.sidebar.setObjectName("Sidebar")
+        self.sidebar.setFixedWidth(150)
+        self.sidebar.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.sidebar.setStyleSheet("""
+            QListWidget#Sidebar {
+                background: transparent;
+                border: none;
+                border-right: 1px solid rgba(128, 128, 128, 0.2);
+                outline: none;
+                padding-top: 8px;
+            }
+            QListWidget#Sidebar::item {
+                padding: 10px 14px;
+                margin: 2px 8px;
+                border-radius: 6px;
+                font-size: 13px;
+                font-weight: 500;
+            }
+            QListWidget#Sidebar::item:selected {
+                background: rgba(59, 130, 246, 0.15);
+                color: #3b82f6;
+                font-weight: bold;
+            }
+            QListWidget#Sidebar::item:hover:!selected {
+                background: rgba(128, 128, 128, 0.1);
+            }
+        """)
+        content_layout.addWidget(self.sidebar)
+
+        self.stack = QStackedWidget()
+        content_layout.addWidget(self.stack, 1)
 
         basic = QWidget()
         bl = QVBoxLayout(basic)
-        bl.setSpacing(10)
+        bl.setContentsMargins(16, 20, 16, 20)
+        bl.setSpacing(16)
 
         r_theme = QHBoxLayout()
         r_theme.addWidget(QLabel(_t("lbl_theme")))
@@ -599,11 +637,13 @@ class PDFExportDialog(QDialog):
         bl.addLayout(r_cb)
 
         bl.addStretch()
-        self.tabs.addTab(basic, _t("tab_basic"))
+        self.stack.addWidget(basic)
+        self.sidebar.addItem(_t("tab_basic"))
 
         adv = QWidget()
         avl = QVBoxLayout(adv)
-        avl.setSpacing(10)
+        avl.setContentsMargins(16, 20, 16, 20)
+        avl.setSpacing(16)
         pg = QHBoxLayout()
 
         def _spin(label, attr, lo, hi, val, sfx):
@@ -655,11 +695,13 @@ class PDFExportDialog(QDialog):
         ra.addStretch()
         avl.addLayout(ra)
         avl.addStretch()
-        self.tabs.addTab(adv, _t("tab_advanced"))
+        self.stack.addWidget(adv)
+        self.sidebar.addItem(_t("tab_advanced"))
 
         self.fields_tab = QWidget()
         fl = QVBoxLayout(self.fields_tab)
-        fl.setContentsMargins(0, 6, 0, 0)
+        fl.setContentsMargins(12, 16, 12, 16)
+        fl.setSpacing(10)
         hint = QLabel(_t("fields_hint"))
         hint.setStyleSheet("color:#64748b;font-size:11px;padding:0 4px 4px")
         hint.setWordWrap(True)
@@ -673,12 +715,13 @@ class PDFExportDialog(QDialog):
         self.fields_layout.addStretch()
         self.fields_scroll.setWidget(self.fields_container)
         fl.addWidget(self.fields_scroll)
-        self.tabs.addTab(self.fields_tab, _t("tab_fields"))
+        self.stack.addWidget(self.fields_tab)
+        self.sidebar.addItem(_t("tab_fields"))
 
         settings_tab = QWidget()
         stl = QVBoxLayout(settings_tab)
-        stl.setSpacing(12)
-        stl.setContentsMargins(12, 12, 12, 12)
+        stl.setSpacing(16)
+        stl.setContentsMargins(16, 20, 16, 20)
 
         preset_group = QGroupBox(_t("grp_settings"))
         preset_ly = QVBoxLayout()
@@ -735,8 +778,13 @@ class PDFExportDialog(QDialog):
         self.debug_cb.toggled.connect(self.log_btn.setVisible)
 
         stl.addStretch()
-        self.tabs.addTab(settings_tab, _t("tab_settings"))
-        root.addWidget(self.tabs)
+        self.stack.addWidget(settings_tab)
+        self.sidebar.addItem(_t("tab_settings"))
+        
+        self.sidebar.currentRowChanged.connect(self.stack.setCurrentIndex)
+        self.sidebar.setCurrentRow(0)
+
+        root.addWidget(content_frame)
 
         bottom = QHBoxLayout()
         bottom.setSpacing(6)
@@ -805,10 +853,13 @@ class PDFExportDialog(QDialog):
     def _on_render_radio_changed(self, idx, checked):
         if not checked:
             return
-        tab_idx = self.tabs.indexOf(self.fields_tab)
-        self.tabs.setTabEnabled(tab_idx, idx == 0)
-        if idx != 0 and self.tabs.currentIndex() == tab_idx:
-            self.tabs.setCurrentIndex(0)
+        tab_idx = self.stack.indexOf(self.fields_tab)
+        item = self.sidebar.item(tab_idx)
+        if item:
+            item.setHidden(idx != 0)
+        if idx != 0 and self.stack.currentIndex() == tab_idx:
+            self.stack.setCurrentIndex(0)
+            self.sidebar.setCurrentRow(0)
 
     def _populate_decks(self):
         self._all_decks = sorted(mw.col.decks.all_names_and_ids(), key=lambda d: d.name)
@@ -980,8 +1031,9 @@ class PDFExportDialog(QDialog):
     def _on_export(self):
         dn = self._sel()
         short = dn.split("::")[-1] if "::" in dn else dn
+        uid = str(uuid.uuid4()).split('-')[0][:6]
         sp, _ = QFileDialog.getSaveFileName(
-            self, _t("dlg_save_pdf"), "{}.pdf".format(short), _t("pdf_filter"))
+            self, _t("dlg_save_pdf"), "{}_{}.pdf".format(short, uid), _t("pdf_filter"))
         if not sp:
             return
         logger.start("Export")
@@ -1279,7 +1331,6 @@ class PDFExportDialog(QDialog):
         if compact:
             c_padx = max(5, (pad + 2) * 2 // 3)
             compact_css = (
-                "@page{{margin-top:{top_mg}mm}}"
                 "h1.doc-title{{margin-top:0!important}}"
                 "body.compact .card{{box-shadow:none;border-radius:4px}}"
                 "body.compact .fb{{padding:{cph}px {cpx}px}}"
@@ -1379,7 +1430,7 @@ class PDFExportDialog(QDialog):
                 "padding:32px 0;min-height:100vh;background:#3f3f46}}"
                 ".page{{position:relative;"
                 "width:{pw:.0f}px;min-height:{ph:.0f}px;"
-                "background:{bg};padding:{mg:.0f}px;"
+                "background:{bg};padding:{mg:.0f}px;padding-top:{top_mg:.0f}px;"
                 "box-shadow:0 4px 24px rgba(0,0,0,.35),0 0 0 1px rgba(0,0,0,.08);"
                 "margin-bottom:6px}}"
                 ".page-break-marker{{width:{pw:.0f}px;height:24px;"
@@ -1397,7 +1448,7 @@ class PDFExportDialog(QDialog):
                 ".page-break-marker{{display:none}}"
                 "}}"
             ).format(content=content_css, pw=page_w_px, ph=page_h_px,
-                     mg=mg_px, ps=ps, bg=t["body"])
+                     mg=mg_px, top_mg=top_mg_px, ps=ps, bg=t["body"])
         else:
             wrapper_css = (
                 "{content}"
@@ -1456,13 +1507,13 @@ class PDFExportDialog(QDialog):
             body_open = (
                 '</style></head>'
                 '<body{cls} style="background-color:{bg};margin:0;'
-                'padding:{mg}mm;padding-top:0;'
+                'padding:{top_mg}mm {mg}mm {mg}mm {mg}mm;box-sizing:border-box;'
                 '-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important">'
                 '<div style="position:fixed;top:0;left:0;right:0;bottom:0;'
                 'background-color:{bg};z-index:0;'
                 '-webkit-print-color-adjust:exact!important;'
                 'print-color-adjust:exact!important"></div>'
-            ).format(cls=body_cls, bg=_bg, mg=mg)
+            ).format(cls=body_cls, bg=_bg, mg=mg, top_mg=top_mg)
             html = [html_open, wrapper_css, body_open]
         else:
             html = [
