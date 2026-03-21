@@ -92,6 +92,12 @@ Exported HTML files aren't just static! Click any image to launch a full-screen,
 
 ---
 
+| Todo |
+|---|---|
+| **Weird spacing issue**| ❌ |
+
+---
+
 ## 📝 License
 
 Distributed under the **MIT License**. Free to use, modify, and distribute.
