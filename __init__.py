@@ -1324,6 +1324,12 @@ class PDFExportDialog(QDialog):
             self._reset()
 
     def _start_qt_pdf_export(self, path):
+        logger.log("Generating Qt WebEngine fallback layout")
+        html, _ = self._build_html(mode="pdf_fallback")
+        _, self.temp_fallback_path = tempfile.mkstemp(suffix=".html", text=True)
+        with open(self.temp_fallback_path, "w", encoding="utf-8") as f:
+            f.write(html)
+
         self.page = CustomWebEnginePage()
         try:
             self.page.settings().setAttribute(
@@ -1336,7 +1342,7 @@ class PDFExportDialog(QDialog):
         except Exception:
             pass
         self.page.loadFinished.connect(lambda ok: self._loaded(ok, path))
-        self.page.load(QUrl.fromLocalFile(self.temp_html_path))
+        self.page.load(QUrl.fromLocalFile(self.temp_fallback_path))
 
     def _loaded(self, ok, path):
         if not ok:
@@ -1843,6 +1849,18 @@ class PDFExportDialog(QDialog):
             ).format(ps=ps, content=content_css, bg=t["body"],
                      top_mm=top_mg, mg_mm=mg)
 
+        elif mode == "pdf_fallback":
+            wrapper_css = (
+                "@page{{size:{ps};margin:0}}"
+                "{content}"
+                "html{{background-color:{bg}!important;min-height:100%;"
+                "-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}}"
+                "body{{background-color:{bg}!important;margin:0;"
+                "padding:{mg}mm;padding-top:0;"
+                "-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}}"
+                ".page-content{{position:relative;z-index:1}}"
+            ).format(ps=ps, mg=mg, content=content_css, bg=t["body"])
+
         elif mode == "preview":
             wrapper_css = (
                 "{content}"
@@ -1933,6 +1951,25 @@ class PDFExportDialog(QDialog):
                 '-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important">'
                 '<div class="pdf-bg"></div>'
             ).format(cls=body_cls, bg=_bg)
+            html = [html_open, wrapper_css, body_open]
+        elif mode == "pdf_fallback":
+            _bg = t["body"]
+            html_open = (
+                '<!DOCTYPE html>'
+                '<html style="background-color:{bg};margin:0;padding:0;'
+                '-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important">'
+                '<head><meta charset="utf-8"><style>'
+            ).format(bg=_bg)
+            body_open = (
+                '</style></head>'
+                '<body{cls} style="background-color:{bg};margin:0;'
+                'padding:{mg}mm;padding-top:0;'
+                '-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important">'
+                '<div style="position:fixed;top:0;left:0;right:0;bottom:0;'
+                'background-color:{bg};z-index:0;'
+                '-webkit-print-color-adjust:exact!important;'
+                'print-color-adjust:exact!important"></div>'
+            ).format(cls=body_cls, bg=_bg, mg=mg)
             html = [html_open, wrapper_css, body_open]
         else:
             html = [
@@ -2123,6 +2160,9 @@ class PDFExportDialog(QDialog):
                     '<span>' + _t("page_break_lbl") + '</span></div>'
                     '<div class="page"><div class="page-content">'
                 )
+            if mode == "pdf_fallback":
+                h = int(top_mg_px) if use_margin else 0
+                return '<div style="break-before:page;height:{}px;display:block;margin:0;padding:0"></div>'.format(h)
             return '<div class="page-break"></div>'
 
 
@@ -2221,7 +2261,7 @@ class PDFExportDialog(QDialog):
                                 _t("rendered_back"), a))
                     parts.append("</div>")
 
-                    if compact and mode in ("pdf", "preview"):
+                    if compact and mode in ("pdf", "preview", "pdf_fallback"):
                         card_items.append((idx, est, parts))
                     elif mode == "pdf":
                         html.extend(parts)
@@ -2289,7 +2329,7 @@ class PDFExportDialog(QDialog):
                         parts.append('<div class="sec-x">{}</div>'.format("".join(sx)))
                     parts.append("</div>")
 
-                    if compact and mode in ("pdf", "preview"):
+                    if compact and mode in ("pdf", "preview", "pdf_fallback"):
                         card_items.append((idx, est, parts))
                     elif mode == "pdf":
                         html.extend(parts)
@@ -2316,6 +2356,20 @@ class PDFExportDialog(QDialog):
                         html.append(pb)
                 for c_idx, est, parts in page_cards:
                     html.extend(parts)
+        elif compact and card_items and mode == "pdf_fallback":
+            acc_h = title_h_est
+            cards_on_page = 0
+            for _, est, parts in card_items:
+                if acc_h + est > break_h_px and cards_on_page > 0:
+                    html.append(
+                        '<div style="break-before:page;height:0;'
+                        'display:block;margin:0;padding:0"></div>'
+                    )
+                    acc_h = 0
+                    cards_on_page = 0
+                acc_h += est
+                cards_on_page += 1
+                html.extend(parts)
         elif compact and card_items:
             card_items.sort(key=lambda c: c[0])
             for _, _, parts in card_items:

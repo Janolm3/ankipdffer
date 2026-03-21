@@ -19,6 +19,7 @@ cd "${ADDON_DIR}"
 zip -r "${DIST_DIR}/${ZIP_NAME}" \
     __init__.py \
     manifest.json \
+    .vendor/ \
     -x "*.pyc" -x "__pycache__/*" -x "*.DS_Store" -x "settings.json" -x "dist/*"
 
 echo "==> Created ${DIST_DIR}/${ZIP_NAME}"

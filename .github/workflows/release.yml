@@ -26,6 +26,7 @@ jobs:
           zip -r "dist/AnkiPdffer-${VERSION}.zip" \
             __init__.py \
             manifest.json \
+            .vendor/ \
             -x "*.pyc" -x "__pycache__/*" -x "*.DS_Store" -x "settings.json" -x "dist/*"
           echo "ZIP=dist/AnkiPdffer-${VERSION}.zip" >> "$GITHUB_ENV"
 
