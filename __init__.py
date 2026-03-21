@@ -781,7 +781,7 @@ class PDFExportDialog(QDialog):
         # --- Tab: Settings ---
         settings_tab = QWidget()
         stl = QVBoxLayout(settings_tab)
-        stl.setSpacing(24)
+        stl.setSpacing(16)
         stl.setContentsMargins(24, 24, 24, 24)
 
         preset_row = QHBoxLayout()
@@ -806,6 +806,7 @@ class PDFExportDialog(QDialog):
         self.settings_info = QLabel("")
         self.settings_info.setStyleSheet("color:#64748b;font-size:12px")
         self.settings_info.setWordWrap(True)
+        self.settings_info.setVisible(False)
         stl.addWidget(self.settings_info)
 
         lang_ly = QHBoxLayout()
@@ -952,7 +953,13 @@ class PDFExportDialog(QDialog):
         pfx = rn + "::"
         for d in self._all_decks:
             if d.name.startswith(pfx):
-                self.subdeck_combo.addItem(d.name[len(pfx):], d.name)
+                sub_name = d.name[len(pfx):]
+                parts = sub_name.split("::")
+                if len(parts) > 1:
+                    display = "    " * (len(parts) - 1) + "↳ " + parts[-1]
+                else:
+                    display = parts[0]
+                self.subdeck_combo.addItem(display, d.name)
         self.subdeck_combo.blockSignals(False)
         cur = mw.col.decks.current()
         if cur and cur["name"].startswith(pfx):
@@ -1499,7 +1506,7 @@ class PDFExportDialog(QDialog):
 
                 self.page.pdfPrintingFinished.connect(self._printed)
                 self.page.printToPdf(path, layout)
-            except:
+            except Exception:
                 # Minimal fallback - likely to have white margins but better than crash
                 if hasattr(self.page, 'pdfPrintingFinished'):
                     self.page.pdfPrintingFinished.connect(self._printed)
@@ -1602,6 +1609,7 @@ class PDFExportDialog(QDialog):
             with open(self._settings_path(), "w", encoding="utf-8") as f:
                 json.dump(s, f, indent=2, ensure_ascii=False)
             self.settings_info.setText(_t("msg_settings_saved").format(self._settings_path()))
+            self.settings_info.setVisible(True)
         except Exception as e:
             showWarning(_t("msg_settings_err").format(e))
 
@@ -1615,6 +1623,7 @@ class PDFExportDialog(QDialog):
                 s = json.load(f)
             self._apply_settings(s)
             self.settings_info.setText(_t("msg_settings_loaded"))
+            self.settings_info.setVisible(True)
         except Exception as e:
             showWarning(_t("msg_settings_load_err").format(e))
 
@@ -1637,6 +1646,7 @@ class PDFExportDialog(QDialog):
             except OSError:
                 pass
         self.settings_info.setText(_t("msg_settings_reset"))
+        self.settings_info.setVisible(True)
 
     # ================================================================== HTML
     def _build_html(self, mode="pdf"):
