@@ -1826,6 +1826,8 @@ class PDFExportDialog(QDialog):
                 ".pdf-bg{{position:fixed;top:0;left:0;right:0;bottom:0;background:{bg};"
                 "z-index:0;-webkit-print-color-adjust:exact!important;"
                 "print-color-adjust:exact!important}}"
+                ".page-break{{display:block;height:0;margin:0;padding:0;"
+                "break-before:page;page-break-before:always}}"
                 ".page-content{{position:relative;z-index:1;display:flow-root}}"
                 "h1.doc-title{{margin-top:0}}"
             ).format(ps=ps, content=content_css, bg=t["body"],
@@ -2130,6 +2132,42 @@ class PDFExportDialog(QDialog):
             img_est = min(n_images, 5) * min(img_h, 200) if has_image else 0
             return int(overhead + text_h + img_est + 4)
 
+        def pack_compact_pages(items):
+            # Compact mode may reorder cards to reduce page waste.
+            sorted_items = sorted(items, key=lambda c: (-c[1], c[0]))
+            pages = []
+            pages_used = []
+            page_counts = []
+
+            for item in sorted_items:
+                _, est, _ = item
+                best_page = None
+                best_remaining = None
+
+                for pi in range(len(pages)):
+                    page_capacity = break_h_px - (title_h_est if pi == 0 else 0)
+                    needed_h = est + (card_gap if page_counts[pi] > 0 else 0)
+                    remaining = page_capacity - (pages_used[pi] + needed_h)
+                    if remaining < 0:
+                        continue
+                    if best_remaining is None or remaining < best_remaining:
+                        best_page = pi
+                        best_remaining = remaining
+
+                if best_page is None:
+                    pages.append([item])
+                    pages_used.append(est)
+                    page_counts.append(1)
+                else:
+                    pages[best_page].append(item)
+                    pages_used[best_page] += est + (card_gap if page_counts[best_page] > 0 else 0)
+                    page_counts[best_page] += 1
+
+            for page in pages:
+                page.sort(key=lambda c: c[0])
+
+            return pages
+
         cards_ok = 0
         cards_skip = 0
         card_items = []
@@ -2173,10 +2211,10 @@ class PDFExportDialog(QDialog):
                                 _t("rendered_back"), a))
                     parts.append("</div>")
 
-                    if mode == "pdf":
-                        html.extend(parts)
-                    elif compact:
+                    if compact and mode in ("pdf", "preview"):
                         card_items.append((idx, est, parts))
+                    elif mode == "pdf":
+                        html.extend(parts)
                     else:
                         needed_h = est + (card_gap if cards_on_page[0] > 0 else 0)
                         if accumulated_h[0] + needed_h > content_h_px and cards_on_page[0] > 0:
@@ -2241,10 +2279,10 @@ class PDFExportDialog(QDialog):
                         parts.append('<div class="sec-x">{}</div>'.format("".join(sx)))
                     parts.append("</div>")
 
-                    if mode == "pdf":
-                        html.extend(parts)
-                    elif compact:
+                    if compact and mode in ("pdf", "preview"):
                         card_items.append((idx, est, parts))
+                    elif mode == "pdf":
+                        html.extend(parts)
                     else:
                         needed_h = est + (card_gap if cards_on_page[0] > 0 else 0)
                         if accumulated_h[0] + needed_h > content_h_px and cards_on_page[0] > 0:
@@ -2259,26 +2297,8 @@ class PDFExportDialog(QDialog):
                     logger.error("Karta #{}".format(idx), e)
                     cards_skip += 1
 
-        # ---- FIX: sequential pagination preserving card order ----
-        if compact and card_items and mode != "pdf":
-            card_items.sort(key=lambda c: c[0])
-
-            pages = [[]]
-            pages_used = [title_h_est]
-            page_counts = [0]
-
-            for item in card_items:
-                orig_idx, est, parts = item
-                needed_h = est + (card_gap if page_counts[-1] > 0 else 0)
-                if pages_used[-1] + needed_h <= break_h_px:
-                    pages[-1].append(item)
-                    pages_used[-1] += needed_h
-                    page_counts[-1] += 1
-                else:
-                    pages.append([item])
-                    pages_used.append(est)
-                    page_counts.append(1)
-
+        if compact and card_items and mode in ("pdf", "preview"):
+            pages = pack_compact_pages(card_items)
             for pi, page_cards in enumerate(pages):
                 if pi > 0:
                     pb = emit_page_break()
@@ -2286,6 +2306,10 @@ class PDFExportDialog(QDialog):
                         html.append(pb)
                 for c_idx, est, parts in page_cards:
                     html.extend(parts)
+        elif compact and card_items:
+            card_items.sort(key=lambda c: c[0])
+            for _, _, parts in card_items:
+                html.extend(parts)
 
         if mode == "preview":
             html.append("</div></div>")

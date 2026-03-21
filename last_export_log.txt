@@ -1,9 +1,8 @@
-[17:07:56.067] == Export START ==
-[17:07:56.072] Theme: Dark (1)
-[17:07:56.072] Kart: 13
-[17:07:56.075] OK: 13, skip: 0
-[17:07:56.075] Img OK: 0, fail: 0
-[17:07:57.188] WeasyPrint python: /opt/homebrew/opt/python@3.14/bin/python3.14
-[17:07:57.188] PDF engine: WeasyPrint
-[17:07:57.188] PDF: 38357 B
-[17:07:57.188] == DONE (1.12s) ==
+[17:18:55.069] == Export START ==
+[17:18:55.073] Theme: Pro (2)
+[17:18:55.074] Kart: 13
+[17:18:55.076] OK: 13, skip: 0
+[17:18:55.076] Img OK: 0, fail: 0
+[17:18:55.884] PDF engine: WeasyPrint
+[17:18:55.884] PDF: 39242 B
+[17:18:55.884] == DONE (0.82s) ==
