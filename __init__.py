@@ -8,6 +8,10 @@ import traceback
 import datetime
 import json
 import uuid
+import shutil
+import subprocess
+import sys
+import threading
 from aqt import mw
 from aqt.qt import *
 from aqt.utils import showInfo, showWarning
@@ -509,7 +513,7 @@ DEFAULT_SETTINGS = {
     "zebra": False,
     "page": 0,
     "margins": 15,
-    "top_margin": 10,
+    "top_margin": 15,
     "padding": 12,
     "min_gap": 8,
     "line_height": 1.40,
@@ -707,7 +711,7 @@ class PDFExportDialog(QDialog):
         self.margin_spin = _spin(5, 40, 15, " mm")
         avl.addRow(_t("lbl_margins"), self.margin_spin)
 
-        self.top_margin_spin = _spin(0, 40, 10, " mm")
+        self.top_margin_spin = _spin(0, 40, 15, " mm")
         avl.addRow(_t("lbl_top_margin"), self.top_margin_spin)
 
         self.padding_spin = _spin(2, 50, 12, " px")
@@ -1026,6 +1030,187 @@ class PDFExportDialog(QDialog):
     def _get_page_dims(self):
         return PAGE_SIZES.get(self.page_combo.currentText(), (210, 297))
 
+    @staticmethod
+    def _vendor_dir():
+        return os.path.join(os.path.dirname(__file__), ".vendor")
+
+    def _find_weasy_python(self, logs):
+        cached = getattr(self, "_weasy_python_cache", None)
+        if cached and os.path.exists(cached):
+            return cached
+
+        vendor_dir = self._vendor_dir()
+        candidates = []
+        launcher_path = os.path.join(vendor_dir, "bin", "weasyprint")
+        try:
+            with open(launcher_path, "r", encoding="utf-8") as f:
+                first_line = f.readline().strip()
+            if first_line.startswith("#!"):
+                candidates.append(first_line[2:].strip())
+        except OSError:
+            pass
+
+        for candidate in [
+            os.environ.get("ANKI_PDFFER_PYTHON"),
+            "/opt/homebrew/opt/python@3.14/bin/python3.14",
+            "/opt/homebrew/bin/python3",
+            "/usr/local/bin/python3",
+            shutil.which("python3"),
+            "/usr/bin/python3",
+        ]:
+            if candidate and candidate not in candidates:
+                candidates.append(candidate)
+
+        probe = (
+            "import os, sys\n"
+            "vendor_dir = sys.argv[1]\n"
+            "sys.path.insert(0, vendor_dir)\n"
+            "from weasyprint import HTML\n"
+            "print(sys.executable)\n"
+        )
+        for candidate in candidates:
+            if not candidate or not os.path.exists(candidate):
+                continue
+            try:
+                result = subprocess.run(
+                    [candidate, "-c", probe, vendor_dir],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+            except Exception as e:
+                logs.append("Weasy probe error [{}]: {}".format(candidate, e))
+                continue
+
+            if result.returncode == 0:
+                resolved = candidate
+                if result.stdout.strip():
+                    resolved = result.stdout.strip().splitlines()[-1].strip() or candidate
+                self._weasy_python_cache = resolved if os.path.exists(resolved) else candidate
+                logs.append("WeasyPrint python: {}".format(self._weasy_python_cache))
+                return self._weasy_python_cache
+
+            detail = (result.stderr or result.stdout or "").strip().splitlines()
+            if detail:
+                logs.append("Weasy probe reject [{}]: {}".format(candidate, detail[-1][:300]))
+
+        logs.append("WeasyPrint unavailable (no compatible python3)")
+        return None
+
+    @staticmethod
+    def _safe_filename(name):
+        safe = re.sub(r'[\\/:*?"<>|\r\n\t]+', " ", name or "")
+        safe = re.sub(r"\s+", " ", safe).strip().strip(".")
+        return safe or "export"
+
+    def _build_pdf_pagination_script(self):
+        pw_mm, ph_mm = self._get_page_dims()
+        ppm = 3.7795275591
+        page_h_px = ph_mm * ppm
+        top_mg_px = self.top_margin_spin.value() * ppm
+        content_h_px = page_h_px - (top_mg_px * 2)
+        return r"""
+(function() {
+    var firstPage = document.querySelector('.pdf-page');
+    if (!firstPage) {
+        return {ok: false, reason: 'missing-page'};
+    }
+
+    var pages = Array.from(document.querySelectorAll('.pdf-page'));
+    var cards = Array.from(document.querySelectorAll('.card'));
+    if (!cards.length) {
+        return {ok: true, pages: pages.length, cards: 0, breaks: 0};
+    }
+
+    var firstContent = firstPage.querySelector('.page-content');
+    var pageContentHeight = %.2f;
+    if (!firstContent) {
+        return {ok: false, reason: 'missing-content'};
+    }
+    cards.forEach(function(card) {
+        if (card.parentNode) {
+            card.parentNode.removeChild(card);
+        }
+    });
+
+    for (var i = 1; i < pages.length; i += 1) {
+        pages[i].remove();
+    }
+
+    var currentContent = firstContent;
+    var cardsOnPage = 0;
+    var breaks = 0;
+
+    function num(v) {
+        v = parseFloat(v || '0');
+        return isNaN(v) ? 0 : v;
+    }
+
+    function usedHeight(content, card) {
+        var contentRect = content.getBoundingClientRect();
+        var cardRect = card.getBoundingClientRect();
+        var cardStyle = window.getComputedStyle(card);
+        return Math.ceil(cardRect.bottom - contentRect.top + num(cardStyle.marginBottom));
+    }
+
+    function createPage() {
+        var page = document.createElement('div');
+        page.className = 'pdf-page';
+        var content = document.createElement('div');
+        content.className = 'page-content';
+        page.appendChild(content);
+        firstPage.parentNode.appendChild(page);
+        return {page: page, content: content};
+    }
+
+    cards.forEach(function(card) {
+        currentContent.appendChild(card);
+        var used = usedHeight(currentContent, card);
+        if (cardsOnPage > 0 && used > pageContentHeight + 1) {
+            currentContent.removeChild(card);
+            var next = createPage();
+            currentContent = next.content;
+            currentContent.appendChild(card);
+            cardsOnPage = 1;
+            breaks += 1;
+        } else {
+            cardsOnPage += 1;
+        }
+    });
+
+    return {
+        ok: true,
+        pages: document.querySelectorAll('.pdf-page').length,
+        cards: cards.length,
+        breaks: breaks,
+        pageHeight: %.2f,
+        contentHeight: pageContentHeight,
+        topMargin: %.2f,
+        firstPageHeight: Math.ceil(firstContent.getBoundingClientRect().height || 0)
+    };
+})();
+""" % (content_h_px, page_h_px, top_mg_px)
+
+    def _build_pdf_ready_script(self):
+        return r"""
+(function() {
+    var images = Array.from(document.images || []);
+    var pendingImages = images.filter(function(img) {
+        return !img.complete;
+    }).length;
+    var fontsLoaded = true;
+    if (document.fonts && document.fonts.status) {
+        fontsLoaded = document.fonts.status === 'loaded';
+    }
+    return {
+        ready: fontsLoaded && pendingImages === 0,
+        fontsLoaded: fontsLoaded,
+        pendingImages: pendingImages,
+        imageCount: images.length
+    };
+})();
+"""
+
     def _set_btns(self, on):
         self.legacy_btn.setEnabled(on)
         self.preview_btn.setEnabled(on)
@@ -1038,7 +1223,7 @@ class PDFExportDialog(QDialog):
         if not self.debug_cb.isChecked():
             return
         desktop = os.path.expanduser("~/Desktop")
-        short = self._sel().split("::")[-1]
+        short = self._safe_filename(self._sel().split("::")[-1])
         ts = datetime.datetime.now().strftime("%H%M%S")
         html_path = os.path.join(desktop, "anki_debug_{}_{}.html".format(short, ts))
         with open(html_path, "w", encoding="utf-8") as f:
@@ -1080,7 +1265,7 @@ class PDFExportDialog(QDialog):
 
     def _on_export(self):
         dn = self._sel()
-        short = dn.split("::")[-1] if "::" in dn else dn
+        short = self._safe_filename(dn.split("::")[-1] if "::" in dn else dn)
         uid = str(uuid.uuid4()).split('-')[0][:6]
         sp, _ = QFileDialog.getSaveFileName(
             self, _t("dlg_save_pdf"), "{}_{}.pdf".format(short, uid), _t("pdf_filter"))
@@ -1096,25 +1281,28 @@ class PDFExportDialog(QDialog):
             with open(self.temp_html_path, "w", encoding="utf-8") as f:
                 f.write(html)
             self._save_debug_artifacts("pdf", card_ids, html)
-            self.page = CustomWebEnginePage()
-            try:
-                self.page.settings().setAttribute(
-                    QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
-            except AttributeError:
-                pass
-            _bg = _theme_tokens(self.theme_radio.currentIndex())["body"]
-            try:
-                self.page.setBackgroundColor(QColor(_bg))
-            except Exception:
-                pass
-            self.page.loadFinished.connect(lambda ok: self._loaded(ok, sp))
-            self.page.load(QUrl.fromLocalFile(self.temp_html_path))
+            self._start_external_export(sp)
         except Exception as e:
             logger.error("Export", e)
             logger.finish()
             self._save_debug_log()
             showWarning(str(e))
             self._reset()
+
+    def _start_qt_pdf_export(self, path):
+        self.page = CustomWebEnginePage()
+        try:
+            self.page.settings().setAttribute(
+                QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
+        except AttributeError:
+            pass
+        _bg = _theme_tokens(self.theme_radio.currentIndex())["body"]
+        try:
+            self.page.setBackgroundColor(QColor(_bg))
+        except Exception:
+            pass
+        self.page.loadFinished.connect(lambda ok: self._loaded(ok, path))
+        self.page.load(QUrl.fromLocalFile(self.temp_html_path))
 
     def _loaded(self, ok, path):
         if not ok:
@@ -1124,7 +1312,117 @@ class PDFExportDialog(QDialog):
             showWarning(_t("msg_error"))
             self._reset()
             return
-        self._do_print(path)
+        self._wait_for_pdf_layout(path, 0)
+
+    def _wait_for_pdf_layout(self, path, attempt):
+        try:
+            self.page.runJavaScript(
+                self._build_pdf_ready_script(),
+                lambda result, attempt=attempt: self._after_pdf_ready(path, attempt, result),
+            )
+        except TypeError:
+            if attempt < 6:
+                QTimer.singleShot(150, lambda: self._wait_for_pdf_layout(path, attempt + 1))
+            else:
+                QTimer.singleShot(150, lambda: self._do_print(path))
+
+    def _after_pdf_ready(self, path, attempt, result):
+        if result and result.get("ready"):
+            QTimer.singleShot(150, lambda: self._do_print(path))
+            return
+        if attempt < 20:
+            QTimer.singleShot(100, lambda: self._wait_for_pdf_layout(path, attempt + 1))
+            return
+        if result:
+            logger.log("Layout wait timeout: {}".format(result))
+        QTimer.singleShot(150, lambda: self._do_print(path))
+
+    def _start_external_export(self, path):
+        self.export_btn.setText(_t("printing"))
+        self._external_export_result = None
+        html_path = self.temp_html_path
+        worker = threading.Thread(
+            target=self._run_external_export_job,
+            args=(html_path, path),
+            daemon=True,
+        )
+        self._external_export_thread = worker
+        worker.start()
+        QTimer.singleShot(100, lambda: self._poll_external_export(path))
+
+    def _poll_external_export(self, path):
+        result = getattr(self, "_external_export_result", None)
+        if result is None:
+            QTimer.singleShot(100, lambda: self._poll_external_export(path))
+            return
+
+        self._external_export_result = None
+        self._external_export_thread = None
+        for entry in result.get("logs", []):
+            logger.log(entry)
+
+        if result.get("success") and os.path.exists(path):
+            self._printed(path, True)
+            return
+
+        self._start_qt_pdf_export(path)
+
+    def _run_external_export_job(self, html_path, path):
+        logs = []
+        try:
+            ok = self._export_pdf_via_weasyprint(path, html_path, logs)
+            if ok:
+                self._external_export_result = {"success": True, "logs": logs}
+                return
+        except Exception as e:
+            logs.append("External export exception: {}".format(e))
+        self._external_export_result = {"success": False, "logs": logs}
+
+    def _export_pdf_via_weasyprint(self, path, html_path, logs):
+        vendor_dir = self._vendor_dir()
+        if not os.path.isdir(vendor_dir):
+            logs.append("PDF engine: WeasyPrint unavailable (.vendor missing)")
+            return False
+
+        python_bin = self._find_weasy_python(logs)
+        if not python_bin:
+            return False
+
+        logs.append("PDF engine: WeasyPrint")
+        script = (
+            "import os, sys\n"
+            "vendor_dir, html_path, pdf_path = sys.argv[1:4]\n"
+            "sys.path.insert(0, vendor_dir)\n"
+            "from weasyprint import HTML\n"
+            "HTML(filename=html_path, base_url=os.path.dirname(html_path)).write_pdf(pdf_path)\n"
+        )
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+            result = subprocess.run(
+                [python_bin, "-c", script, vendor_dir, html_path, path],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if result.returncode != 0:
+                logs.append("WeasyPrint exit: {}".format(result.returncode))
+                if result.stderr:
+                    logs.append("WeasyPrint stderr: {}".format(result.stderr.strip()[:2000]))
+                if result.stdout:
+                    logs.append("WeasyPrint stdout: {}".format(result.stdout.strip()[:2000]))
+                return False
+            if os.path.exists(path):
+                return True
+        except Exception as e:
+            logs.append("WeasyPrint export error: {}".format(e))
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        logs.append("PDF engine: WeasyPrint failed")
+        return False
 
     def _do_print(self, path):
         self.export_btn.setText(_t("printing"))
@@ -1140,12 +1438,10 @@ class PDFExportDialog(QDialog):
                 "A5": QPageSize.PageSizeId.A5,
             }
             size = QPageSize(ps_map.get(self.page_combo.currentText(), QPageSize.PageSizeId.A4))
-            _mg = float(self.margin_spin.value())
-            _top = float(self.top_margin_spin.value())
             layout = QPageLayout(
                 size,
                 QPageLayout.Orientation.Portrait,
-                QMarginsF(_mg, _top, _mg, _top),
+                QMarginsF(0, 0, 0, 0),
                 QPageLayout.Unit.Millimeter,
             )
 
@@ -1167,12 +1463,10 @@ class PDFExportDialog(QDialog):
                 psid_val = ps_map.get(self.page_combo.currentText(), QPageSize.PageSizeId.A4)
 
                 size = QPageSize(psid_val)
-                _mg = float(self.margin_spin.value())
-                _top = float(self.top_margin_spin.value())
                 layout = QPageLayout(
                     size,
                     QPageLayout.Orientation.Portrait,
-                    QMarginsF(_mg, _top, _mg, _top),
+                    QMarginsF(0, 0, 0, 0),
                     QPageLayout.Unit.Millimeter,
                 )
 
@@ -1200,6 +1494,10 @@ class PDFExportDialog(QDialog):
             showInfo(_t("msg_pdf_saved").format(path))
 
     def _save_debug_log(self):
+        try:
+            logger.save(os.path.join(os.path.dirname(__file__), "last_export_log.txt"))
+        except Exception:
+            pass
         if self.debug_cb.isChecked():
             logger.save(os.path.join(os.path.expanduser("~/Desktop"), "anki_pdf_log.txt"))
 
@@ -1258,7 +1556,7 @@ class PDFExportDialog(QDialog):
         self.zebra_cb.setChecked(s.get("zebra", False))
         self.page_combo.setCurrentIndex(s.get("page", 0))
         self.margin_spin.setValue(s.get("margins", 15))
-        self.top_margin_spin.setValue(s.get("top_margin", 10))
+        self.top_margin_spin.setValue(s.get("top_margin", 15))
         self.padding_spin.setValue(s.get("padding", 12))
         self.gap_spin.setValue(s.get("min_gap", 4))
         self.lh_spin.setValue(s.get("line_height", 1.40))
@@ -1436,7 +1734,7 @@ class PDFExportDialog(QDialog):
             ".sub{{text-align:center;color:{mut};font-size:{subsz}px;"
             "font-weight:500;margin:0 0 {subgap}px;letter-spacing:-.01em}}"
             ".card{{{card_extra}background:{card};margin-bottom:{gap}px!important;"
-            "page-break-inside:avoid;overflow:hidden;display:block;width:100%}}"
+            "break-inside:avoid;page-break-inside:avoid;overflow:hidden;display:block;width:100%}}"
             ".cnum{{font-size:9px;font-weight:700;color:{mut};"
             "text-transform:uppercase;letter-spacing:.1em;padding:6px {padx}px 2px}}"
             ".sec-q,.sec-a,.sec-x{{overflow:hidden}}"
@@ -1488,14 +1786,19 @@ class PDFExportDialog(QDialog):
 
         if mode == "pdf":
             wrapper_css = (
-                "@page{{size:{ps};margin:0}}"
+                "@page{{size:{ps};margin:{top_mm:.2f}mm {mg_mm:.2f}mm {top_mm:.2f}mm {mg_mm:.2f}mm}}"
                 "{content}"
                 "html{{background-color:{bg}!important;min-height:100%;"
                 "-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}}"
                 "body{{background-color:{bg}!important;margin:0;padding:0;"
                 "-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}}"
-                ".page-content{{position:relative;z-index:1}}"
-            ).format(ps=ps, content=content_css, bg=t["body"])
+                ".pdf-bg{{position:fixed;top:0;left:0;right:0;bottom:0;background:{bg};"
+                "z-index:0;-webkit-print-color-adjust:exact!important;"
+                "print-color-adjust:exact!important}}"
+                ".page-content{{position:relative;z-index:1;display:flow-root}}"
+                "h1.doc-title{{margin-top:0}}"
+            ).format(ps=ps, content=content_css, bg=t["body"],
+                     top_mm=top_mg, mg_mm=mg)
 
         elif mode == "preview":
             wrapper_css = (
@@ -1584,10 +1887,7 @@ class PDFExportDialog(QDialog):
                 '</style></head>'
                 '<body{cls} style="background-color:{bg};margin:0;padding:0;'
                 '-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important">'
-                '<div style="position:fixed;top:0;left:0;right:0;bottom:0;'
-                'background-color:{bg};z-index:0;'
-                '-webkit-print-color-adjust:exact!important;'
-                'print-color-adjust:exact!important"></div>'
+                '<div class="pdf-bg"></div>'
             ).format(cls=body_cls, bg=_bg)
             html = [html_open, wrapper_css, body_open]
         else:
@@ -1597,9 +1897,7 @@ class PDFExportDialog(QDialog):
                 "</style></head><body{}>".format(body_cls),
             ]
 
-        if mode == "pdf":
-            html.append('<div class="page-content">')
-        elif mode == "preview":
+        if mode == "preview":
             html.append('<div class="page"><div class="page-content">')
         else:
             html.append('<div class="page-content">')
@@ -1763,8 +2061,6 @@ class PDFExportDialog(QDialog):
                     '<span>' + _t("page_break_lbl") + '</span></div>'
                     '<div class="page"><div class="page-content">'
                 )
-            if mode == "pdf":
-                return '<div style="break-before:page;page-break-before:always;height:0;margin:0;padding:0;"></div>'
             return '<div class="page-break"></div>'
 
 
@@ -1827,7 +2123,9 @@ class PDFExportDialog(QDialog):
                                 _t("rendered_back"), a))
                     parts.append("</div>")
 
-                    if compact:
+                    if mode == "pdf":
+                        html.extend(parts)
+                    elif compact:
                         card_items.append((idx, est, parts))
                     else:
                         needed_h = est + (card_gap if cards_on_page[0] > 0 else 0)
@@ -1893,7 +2191,9 @@ class PDFExportDialog(QDialog):
                         parts.append('<div class="sec-x">{}</div>'.format("".join(sx)))
                     parts.append("</div>")
 
-                    if compact:
+                    if mode == "pdf":
+                        html.extend(parts)
+                    elif compact:
                         card_items.append((idx, est, parts))
                     else:
                         needed_h = est + (card_gap if cards_on_page[0] > 0 else 0)
@@ -1910,7 +2210,7 @@ class PDFExportDialog(QDialog):
                     cards_skip += 1
 
         # ---- FIX: sequential pagination preserving card order ----
-        if compact and card_items:
+        if compact and card_items and mode != "pdf":
             card_items.sort(key=lambda c: c[0])
 
             pages = [[]]
