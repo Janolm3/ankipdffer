@@ -7,6 +7,11 @@ import tempfile
 import traceback
 import datetime
 import json
+import uuid
+import shutil
+import subprocess
+import sys
+import threading
 from aqt import mw
 from aqt.qt import *
 from aqt.utils import showInfo, showWarning
@@ -266,28 +271,37 @@ class InlineRadioGroup(QWidget):
         super().__init__(parent)
         ly = QHBoxLayout()
         ly.setContentsMargins(0, 0, 0, 0)
-        ly.setSpacing(2)
+        ly.setSpacing(12)
         self.group = QButtonGroup(self)
         self.buttons = []
+        self._current_index = default if 0 <= default < len(options) else 0
         for i, label in enumerate(options):
             rb = QRadioButton(label)
             rb.setStyleSheet(
-                "QRadioButton{spacing:3px;padding:0 4px}"
-                "QRadioButton::indicator{width:12px;height:12px}"
+                "QRadioButton{spacing:6px;padding:4px 0;margin:0;border:none;background:transparent}"
+                "QRadioButton::indicator{width:14px;height:14px;border:none;margin:0}"
+                "QRadioButton:hover{border:none;background:transparent}"
+                "QRadioButton:pressed{border:none;background:transparent}"
             )
             if i == default:
                 rb.setChecked(True)
+            rb.toggled.connect(lambda checked, idx=i: self._on_toggled(idx, checked))
             self.group.addButton(rb, i)
             self.buttons.append(rb)
             ly.addWidget(rb)
         ly.addStretch()
         self.setLayout(ly)
 
+    def _on_toggled(self, idx, checked):
+        if checked:
+            self._current_index = idx
+
     def currentIndex(self):
-        return self.group.checkedId()
+        return self._current_index
 
     def setCurrentIndex(self, idx):
         if 0 <= idx < len(self.buttons):
+            self._current_index = idx
             self.buttons[idx].setChecked(True)
 
 
@@ -447,6 +461,55 @@ FONT_OPTIONS = [
     ("Courier New", "'Courier New',Courier,monospace"),
 ]
 
+THEME_PRESETS = [
+    dict(
+        body="#ffffff",
+        card="#ffffff",
+        brd="#e2e8f0",
+        txt="#0f172a",
+        mut="#64748b",
+        acc="#0f172a",
+        div="#e2e8f0",
+        alt="#f8fafc",
+        shadow="0 10px 26px rgba(15,23,42,.06), 0 2px 8px rgba(15,23,42,.04)",
+        accent_brd="#cbd5e1",
+    ),
+    dict(
+        body="#111111",
+        card="#1a1a1a",
+        brd="#2a2a2a",
+        txt="#e5e5e5",
+        mut="#666666",
+        acc="#ffffff",
+        div="#2a2a2a",
+        alt="#151515",
+        shadow="0 16px 30px rgba(0,0,0,.35), 0 4px 12px rgba(0,0,0,.24)",
+        accent_brd="#3f3f46",
+    ),
+    dict(
+        body="#f3f7ff",
+        card="#ffffff",
+        brd="#d6e4ff",
+        txt="#13233d",
+        mut="#5b6b86",
+        acc="#1d4ed8",
+        div="#dbe6ff",
+        alt="#eef4ff",
+        shadow="0 16px 34px rgba(37,99,235,.10), 0 4px 10px rgba(15,23,42,.05)",
+        accent_brd="#93c5fd",
+    ),
+]
+
+THEME_CLASS_NAMES = ["theme-light", "theme-dark", "theme-pro"]
+THEME_DISPLAY_NAMES = ["Light", "Dark", "Pro"]
+
+
+def _theme_tokens(index):
+    if 0 <= index < len(THEME_PRESETS):
+        return THEME_PRESETS[index]
+    return THEME_PRESETS[0]
+
+
 DEFAULT_SETTINGS = {
     "theme": 0,
     "font": 0,
@@ -460,7 +523,7 @@ DEFAULT_SETTINGS = {
     "zebra": False,
     "page": 0,
     "margins": 15,
-    "top_margin": 10,
+    "top_margin": 15,
     "padding": 12,
     "min_gap": 8,
     "line_height": 1.40,
@@ -498,6 +561,7 @@ class PDFExportDialog(QDialog):
         else:
             self.resize(820, 640)
             self.setMinimumSize(600, 440)
+        self._active_export_theme_index = None
 
         root = QVBoxLayout()
         root.setContentsMargins(16, 16, 16, 16)
@@ -517,149 +581,187 @@ class PDFExportDialog(QDialog):
         deck_group.setLayout(dg)
         root.addWidget(deck_group)
 
-        self.tabs = QTabWidget()
+        content_frame = QFrame()
+        content_layout = QHBoxLayout(content_frame)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(12)
 
+        self.sidebar = QListWidget()
+        self.sidebar.setObjectName("Sidebar")
+        self.sidebar.setFixedWidth(150)
+        self.sidebar.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.sidebar.setStyleSheet("""
+            QListWidget#Sidebar {
+                background: transparent;
+                border: none;
+                border-right: 1px solid rgba(128, 128, 128, 0.2);
+                outline: none;
+                padding-top: 8px;
+            }
+            QListWidget#Sidebar::item {
+                padding: 10px 14px;
+                margin: 2px 8px;
+                border-radius: 6px;
+                font-size: 13px;
+                font-weight: 500;
+            }
+            QListWidget#Sidebar::item:selected {
+                background: rgba(59, 130, 246, 0.15);
+                color: #3b82f6;
+            }
+            QListWidget#Sidebar::item:hover:!selected {
+                background: rgba(128, 128, 128, 0.1);
+            }
+        """)
+        content_layout.addWidget(self.sidebar)
+
+        self.stack = QStackedWidget()
+        content_layout.addWidget(self.stack, 1)
+
+        # --- Tab: Basic ---
         basic = QWidget()
-        bl = QVBoxLayout(basic)
-        bl.setSpacing(10)
+        bl = QFormLayout(basic)
+        bl.setContentsMargins(24, 24, 24, 24)
+        bl.setSpacing(28)
+        bl.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
-        r_theme = QHBoxLayout()
-        r_theme.addWidget(QLabel(_t("lbl_theme")))
         self.theme_radio = InlineRadioGroup(
             [_t("theme_light"), _t("theme_dark"), _t("theme_pro")], default=0)
-        r_theme.addWidget(self.theme_radio)
-        r_theme.addStretch()
-        bl.addLayout(r_theme)
+        bl.addRow(_t("lbl_theme"), self.theme_radio)
 
-        r_font = QHBoxLayout()
-        r_font.addWidget(QLabel(_t("lbl_font")))
+        f_row = QHBoxLayout()
         self.font_combo = NoScrollComboBox()
         self.font_combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         for name, _ in FONT_OPTIONS:
             self.font_combo.addItem(name)
         self.font_combo.setCurrentIndex(0)
         self.font_combo.setMinimumWidth(150)
-        r_font.addWidget(self.font_combo)
-        r_font.addSpacing(14)
-        r_font.addWidget(QLabel(_t("lbl_size")))
+        f_row.addWidget(self.font_combo)
+        f_row.addSpacing(12)
+        f_row.addWidget(QLabel(_t("lbl_size")))
         self.fontsize_spin = QSpinBox()
         self.fontsize_spin.setRange(10, 24)
         self.fontsize_spin.setValue(13)
         self.fontsize_spin.setSuffix(" px")
-        r_font.addWidget(self.fontsize_spin)
-        r_font.addStretch()
-        bl.addLayout(r_font)
+        f_row.addWidget(self.fontsize_spin)
+        f_row.addStretch()
+        bl.addRow(_t("lbl_font"), f_row)
 
-        r_width = QHBoxLayout()
-        r_width.addWidget(QLabel(_t("lbl_width")))
+        w_row = QHBoxLayout()
         self.width_radio = InlineRadioGroup([
             _t("width_narrow"), _t("width_medium"), _t("width_wide"),
             _t("width_full"), _t("width_custom"),
         ], default=1)
-        r_width.addWidget(self.width_radio)
+        w_row.addWidget(self.width_radio)
         self.width_spin = NoScrollSpinBox()
         self.width_spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.width_spin.setRange(300, 3000)
         self.width_spin.setValue(800)
         self.width_spin.setSuffix(" px")
         self.width_spin.setVisible(False)
-        r_width.addWidget(self.width_spin)
+        w_row.addWidget(self.width_spin)
         self.width_radio.group.idToggled.connect(self._on_width_radio_changed)
-        r_width.addStretch()
-        bl.addLayout(r_width)
+        w_row.addStretch()
+        bl.addRow(_t("lbl_width"), w_row)
 
-        r_layout = QHBoxLayout()
-        r_layout.addWidget(QLabel(_t("lbl_layout")))
+        l_row = QHBoxLayout()
         self.layout_radio = InlineRadioGroup(
             [_t("layout_standard"), _t("layout_compact")], default=1)
-        r_layout.addWidget(self.layout_radio)
-        r_layout.addStretch()
-        bl.addLayout(r_layout)
+        l_row.addWidget(self.layout_radio)
+        l_row.addSpacing(44)
+        l_row.addWidget(QLabel(_t("lbl_source")))
 
-        r_src = QHBoxLayout()
-        r_src.addWidget(QLabel(_t("lbl_source")))
         self.render_radio = InlineRadioGroup(
             [_t("source_fields"), _t("source_cards")], default=0)
         self.render_radio.group.idToggled.connect(self._on_render_radio_changed)
-        r_src.addWidget(self.render_radio)
-        r_src.addStretch()
-        bl.addLayout(r_src)
+        l_row.addWidget(self.render_radio)
+        l_row.addStretch()
+        bl.addRow(_t("lbl_layout"), l_row)
 
-        r_cb = QHBoxLayout()
+        r_cb1 = QHBoxLayout()
+        r_cb1.setSpacing(16)
         self.show_title_cb = QCheckBox(_t("cb_title"))
         self.show_title_cb.setChecked(True)
-        r_cb.addWidget(self.show_title_cb)
+        r_cb1.addWidget(self.show_title_cb)
         self.card_numbers_cb = QCheckBox(_t("cb_numbers"))
-        r_cb.addWidget(self.card_numbers_cb)
+        r_cb1.addWidget(self.card_numbers_cb)
+        r_cb1.addStretch()
+        bl.addRow(QLabel(""), r_cb1)
+
+        r_cb2 = QHBoxLayout()
+        r_cb2.setSpacing(16)
         self.zebra_cb = QCheckBox(_t("cb_zebra"))
-        r_cb.addWidget(self.zebra_cb)
+        r_cb2.addWidget(self.zebra_cb)
         self.high_contrast_cb = QCheckBox(_t("cb_high_contrast"))
-        r_cb.addWidget(self.high_contrast_cb)
-        r_cb.addStretch()
-        bl.addLayout(r_cb)
+        r_cb2.addWidget(self.high_contrast_cb)
+        r_cb2.addStretch()
+        bl.addRow(QLabel(""), r_cb2)
+        self.stack.addWidget(basic)
+        self.sidebar.addItem(_t("tab_basic"))
 
-        bl.addStretch()
-        self.tabs.addTab(basic, _t("tab_basic"))
-
+        # --- Tab: Advanced ---
         adv = QWidget()
-        avl = QVBoxLayout(adv)
-        avl.setSpacing(10)
-        pg = QHBoxLayout()
+        avl = QFormLayout(adv)
+        avl.setContentsMargins(24, 24, 24, 24)
+        avl.setSpacing(28)
 
-        def _spin(label, attr, lo, hi, val, sfx):
-            v = QVBoxLayout()
-            v.addWidget(QLabel(label))
+        def _spin(lo, hi, val, sfx):
             sp = NoScrollSpinBox()
             sp.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             sp.setRange(lo, hi)
             sp.setValue(val)
             sp.setSuffix(sfx)
-            setattr(self, attr, sp)
-            v.addWidget(sp)
-            pg.addLayout(v)
+            sp.setMaximumWidth(100)
+            return sp
 
-        v0 = QVBoxLayout()
-        v0.addWidget(QLabel(_t("lbl_page")))
         self.page_combo = QComboBox()
         self.page_combo.addItems(["A4", "Letter", "A3", "A5"])
-        v0.addWidget(self.page_combo)
-        pg.addLayout(v0)
-        _spin(_t("lbl_margins"), "margin_spin", 5, 40, 15, " mm")
-        _spin(_t("lbl_top_margin"), "top_margin_spin", 0, 40, 10, " mm")
-        _spin(_t("lbl_padding"), "padding_spin", 2, 50, 12, " px")
-        _spin(_t("lbl_gap"), "gap_spin", 0, 80, 8, " px")
+        self.page_combo.setMaximumWidth(100)
+        avl.addRow(_t("lbl_page"), self.page_combo)
 
-        v1 = QVBoxLayout()
-        v1.addWidget(QLabel(_t("lbl_lineheight")))
+        self.margin_spin = _spin(5, 40, 15, " mm")
+        avl.addRow(_t("lbl_margins"), self.margin_spin)
+
+        self.top_margin_spin = _spin(0, 40, 15, " mm")
+        avl.addRow(_t("lbl_top_margin"), self.top_margin_spin)
+
+        self.padding_spin = _spin(2, 50, 12, " px")
+        avl.addRow(_t("lbl_padding"), self.padding_spin)
+
+        self.gap_spin = _spin(0, 80, 8, " px")
+        avl.addRow(_t("lbl_gap"), self.gap_spin)
+
         self.lh_spin = NoScrollDoubleSpinBox()
         self.lh_spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.lh_spin.setRange(1.0, 2.5)
         self.lh_spin.setValue(1.40)
         self.lh_spin.setSingleStep(0.05)
-        v1.addWidget(self.lh_spin)
-        pg.addLayout(v1)
-        _spin(_t("lbl_maximg"), "img_h_spin", 60, 800, 240, " px")
-        avl.addLayout(pg)
+        self.lh_spin.setMaximumWidth(100)
+        avl.addRow(_t("lbl_lineheight"), self.lh_spin)
+
+        self.img_h_spin = _spin(60, 800, 240, " px")
+        avl.addRow(_t("lbl_maximg"), self.img_h_spin)
 
         ra = QHBoxLayout()
-        self.strip_html_cb = QCheckBox(_t("cb_strip_html"))
-        ra.addWidget(self.strip_html_cb)
-        ra.addSpacing(14)
-        ra.addWidget(QLabel(_t("lbl_card_style")))
         self.card_style_combo = QComboBox()
         self.card_style_combo.addItems([
             _t("style_rounded"), _t("style_sharp"), _t("style_separator"),
             _t("style_double"), _t("style_none"),
         ])
         ra.addWidget(self.card_style_combo)
+        ra.addSpacing(16)
+        self.strip_html_cb = QCheckBox(_t("cb_strip_html"))
+        ra.addWidget(self.strip_html_cb)
         ra.addStretch()
-        avl.addLayout(ra)
-        avl.addStretch()
-        self.tabs.addTab(adv, _t("tab_advanced"))
+        avl.addRow(_t("lbl_card_style"), ra)
+        self.stack.addWidget(adv)
+        self.sidebar.addItem(_t("tab_advanced"))
 
+        # --- Tab: Fields ---
         self.fields_tab = QWidget()
         fl = QVBoxLayout(self.fields_tab)
-        fl.setContentsMargins(0, 6, 0, 0)
+        fl.setContentsMargins(24, 24, 24, 24)
+        fl.setSpacing(20)
         hint = QLabel(_t("fields_hint"))
         hint.setStyleSheet("color:#64748b;font-size:11px;padding:0 4px 4px")
         hint.setWordWrap(True)
@@ -673,54 +775,53 @@ class PDFExportDialog(QDialog):
         self.fields_layout.addStretch()
         self.fields_scroll.setWidget(self.fields_container)
         fl.addWidget(self.fields_scroll)
-        self.tabs.addTab(self.fields_tab, _t("tab_fields"))
+        self.stack.addWidget(self.fields_tab)
+        self.sidebar.addItem(_t("tab_fields"))
 
+        # --- Tab: Settings ---
         settings_tab = QWidget()
         stl = QVBoxLayout(settings_tab)
-        stl.setSpacing(12)
-        stl.setContentsMargins(12, 12, 12, 12)
+        stl.setSpacing(16)
+        stl.setContentsMargins(24, 24, 24, 24)
 
-        preset_group = QGroupBox(_t("grp_settings"))
-        preset_ly = QVBoxLayout()
-        preset_ly.setSpacing(8)
-        preset_row1 = QHBoxLayout()
+        preset_row = QHBoxLayout()
         self.save_settings_btn = QPushButton(_t("btn_save_settings"))
-        self.save_settings_btn.setMinimumHeight(30)
+        self.save_settings_btn.setMinimumHeight(32)
         self.save_settings_btn.clicked.connect(self._save_settings)
-        preset_row1.addWidget(self.save_settings_btn)
-        self.load_settings_btn = QPushButton(_t("btn_load_settings"))
-        self.load_settings_btn.setMinimumHeight(30)
-        self.load_settings_btn.clicked.connect(self._load_settings)
-        preset_row1.addWidget(self.load_settings_btn)
-        preset_row1.addStretch()
-        preset_ly.addLayout(preset_row1)
-        preset_row2 = QHBoxLayout()
-        self.reset_btn = QPushButton(_t("btn_reset_settings"))
-        self.reset_btn.setMinimumHeight(30)
-        self.reset_btn.clicked.connect(self._reset_settings)
-        preset_row2.addWidget(self.reset_btn)
-        preset_row2.addStretch()
-        preset_ly.addLayout(preset_row2)
-        self.settings_info = QLabel("")
-        self.settings_info.setStyleSheet("color:#64748b;font-size:11px")
-        self.settings_info.setWordWrap(True)
-        preset_ly.addWidget(self.settings_info)
-        preset_group.setLayout(preset_ly)
-        stl.addWidget(preset_group)
+        preset_row.addWidget(self.save_settings_btn)
 
-        lang_group = QGroupBox(_t("grp_language"))
+        self.load_settings_btn = QPushButton(_t("btn_load_settings"))
+        self.load_settings_btn.setMinimumHeight(32)
+        self.load_settings_btn.clicked.connect(self._load_settings)
+        preset_row.addWidget(self.load_settings_btn)
+
+        self.reset_btn = QPushButton(_t("btn_reset_settings"))
+        self.reset_btn.setMinimumHeight(32)
+        self.reset_btn.setStyleSheet("color: #ef4444;")
+        self.reset_btn.clicked.connect(self._reset_settings)
+        preset_row.addWidget(self.reset_btn)
+        preset_row.addStretch()
+        stl.addLayout(preset_row)
+
+        self.settings_info = QLabel("")
+        self.settings_info.setStyleSheet("color:#64748b;font-size:12px")
+        self.settings_info.setWordWrap(True)
+        self.settings_info.setVisible(False)
+        stl.addWidget(self.settings_info)
+
         lang_ly = QHBoxLayout()
+        lang_ly.addWidget(QLabel(_t("grp_language") + ":"))
         self.lang_radio = InlineRadioGroup(["English", "Polski"],
                                            default=0 if _lang == "en" else 1)
         lang_ly.addWidget(self.lang_radio)
-        lang_hint = QLabel(_t("lang_hint"))
-        lang_hint.setStyleSheet("color:#64748b;font-size:11px")
-        lang_ly.addWidget(lang_hint)
+        self.lang_warn = QLabel("(Requires restart)")
+        self.lang_warn.setStyleSheet("color: #ef4444; font-size: 11px; font-weight: bold; margin-left: 8px;")
+        self.lang_warn.setVisible(False)
+        lang_ly.addWidget(self.lang_warn)
+        self.lang_radio.group.idToggled.connect(lambda: self.lang_warn.setVisible(True))
         lang_ly.addStretch()
-        lang_group.setLayout(lang_ly)
-        stl.addWidget(lang_group)
+        stl.addLayout(lang_ly)
 
-        dbg_group = QGroupBox(_t("grp_debug"))
         dbg_ly = QHBoxLayout()
         self.debug_cb = QCheckBox(_t("cb_debug"))
         dbg_ly.addWidget(self.debug_cb)
@@ -730,16 +831,24 @@ class PDFExportDialog(QDialog):
         self.log_btn.clicked.connect(self._show_logs)
         dbg_ly.addWidget(self.log_btn)
         dbg_ly.addStretch()
-        dbg_group.setLayout(dbg_ly)
-        stl.addWidget(dbg_group)
+        stl.addLayout(dbg_ly)
         self.debug_cb.toggled.connect(self.log_btn.setVisible)
 
         stl.addStretch()
-        self.tabs.addTab(settings_tab, _t("tab_settings"))
-        root.addWidget(self.tabs)
+        self.stack.addWidget(settings_tab)
+        self.sidebar.addItem(_t("tab_settings"))
 
+        self.sidebar.currentRowChanged.connect(self.stack.setCurrentIndex)
+        self.sidebar.setCurrentRow(0)
+
+        root.addWidget(content_frame)
+
+        # --- Bottom buttons ---
         bottom = QHBoxLayout()
-        bottom.setSpacing(6)
+        bottom.setContentsMargins(20, 0, 20, 20)
+        v_lbl = QLabel("v 1.2")
+        v_lbl.setStyleSheet("color:#71717a;font-size:11px;font-weight:600;")
+        bottom.addWidget(v_lbl)
         bottom.addStretch()
 
         self.grid_cb = QCheckBox(_t("cb_grid"))
@@ -790,6 +899,7 @@ class PDFExportDialog(QDialog):
         self.subdeck_combo.currentIndexChanged.connect(self._on_subdeck_changed)
         self._try_autoload_settings()
 
+    # ------------------------------------------------------------------ slots
     def _on_width_radio_changed(self, idx, checked):
         if checked:
             self.width_spin.setVisible(idx == 4)
@@ -805,11 +915,15 @@ class PDFExportDialog(QDialog):
     def _on_render_radio_changed(self, idx, checked):
         if not checked:
             return
-        tab_idx = self.tabs.indexOf(self.fields_tab)
-        self.tabs.setTabEnabled(tab_idx, idx == 0)
-        if idx != 0 and self.tabs.currentIndex() == tab_idx:
-            self.tabs.setCurrentIndex(0)
+        tab_idx = self.stack.indexOf(self.fields_tab)
+        item = self.sidebar.item(tab_idx)
+        if item:
+            item.setHidden(idx != 0)
+        if idx != 0 and self.stack.currentIndex() == tab_idx:
+            self.stack.setCurrentIndex(0)
+            self.sidebar.setCurrentRow(0)
 
+    # ------------------------------------------------------------------ decks
     def _populate_decks(self):
         self._all_decks = sorted(mw.col.decks.all_names_and_ids(), key=lambda d: d.name)
         top = {}
@@ -839,7 +953,13 @@ class PDFExportDialog(QDialog):
         pfx = rn + "::"
         for d in self._all_decks:
             if d.name.startswith(pfx):
-                self.subdeck_combo.addItem(d.name[len(pfx):], d.name)
+                sub_name = d.name[len(pfx):]
+                parts = sub_name.split("::")
+                if len(parts) > 1:
+                    display = "    " * (len(parts) - 1) + "↳ " + parts[-1]
+                else:
+                    display = parts[0]
+                self.subdeck_combo.addItem(display, d.name)
         self.subdeck_combo.blockSignals(False)
         cur = mw.col.decks.current()
         if cur and cur["name"].startswith(pfx):
@@ -893,6 +1013,7 @@ class PDFExportDialog(QDialog):
             self.fields_layout.insertWidget(self.fields_layout.count() - 1, w)
             self.field_widgets.append(w)
 
+    # ------------------------------------------------------------------ logs
     def _show_logs(self):
         dlg = QDialog(self)
         dlg.setWindowTitle(_t("logs_title"))
@@ -923,8 +1044,200 @@ class PDFExportDialog(QDialog):
         ly.addLayout(bb)
         dlg.exec()
 
+    # ------------------------------------------------------------------ helpers
     def _get_page_dims(self):
         return PAGE_SIZES.get(self.page_combo.currentText(), (210, 297))
+
+    @staticmethod
+    def _vendor_dir():
+        return os.path.join(os.path.dirname(__file__), ".vendor")
+
+    def _find_weasy_python(self, logs):
+        cached = getattr(self, "_weasy_python_cache", None)
+        if cached and os.path.exists(cached):
+            return cached
+
+        vendor_dir = self._vendor_dir()
+        candidates = []
+        launcher_path = os.path.join(vendor_dir, "bin", "weasyprint")
+        try:
+            with open(launcher_path, "r", encoding="utf-8") as f:
+                first_line = f.readline().strip()
+            if first_line.startswith("#!"):
+                candidates.append(first_line[2:].strip())
+        except OSError:
+            pass
+
+        for candidate in [
+            os.environ.get("ANKI_PDFFER_PYTHON"),
+            "/opt/homebrew/opt/python@3.14/bin/python3.14",
+            "/opt/homebrew/bin/python3",
+            "/usr/local/bin/python3",
+            shutil.which("python3"),
+            "/usr/bin/python3",
+        ]:
+            if candidate and candidate not in candidates:
+                candidates.append(candidate)
+
+        probe = (
+            "import os, sys\n"
+            "vendor_dir = sys.argv[1]\n"
+            "sys.path.insert(0, vendor_dir)\n"
+            "from weasyprint import HTML\n"
+            "print(sys.executable)\n"
+        )
+        for candidate in candidates:
+            if not candidate or not os.path.exists(candidate):
+                continue
+            try:
+                result = subprocess.run(
+                    [candidate, "-c", probe, vendor_dir],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+            except Exception as e:
+                logs.append("Weasy probe error [{}]: {}".format(candidate, e))
+                continue
+
+            if result.returncode == 0:
+                resolved = candidate
+                if result.stdout.strip():
+                    resolved = result.stdout.strip().splitlines()[-1].strip() or candidate
+                self._weasy_python_cache = resolved if os.path.exists(resolved) else candidate
+                logs.append("WeasyPrint python: {}".format(self._weasy_python_cache))
+                return self._weasy_python_cache
+
+            detail = (result.stderr or result.stdout or "").strip().splitlines()
+            if detail:
+                logs.append("Weasy probe reject [{}]: {}".format(candidate, detail[-1][:300]))
+
+        logs.append("WeasyPrint unavailable (no compatible python3)")
+        return None
+
+    @staticmethod
+    def _safe_filename(name):
+        safe = re.sub(r'[\\/:*?"<>|\r\n\t]+', " ", name or "")
+        safe = re.sub(r"\s+", " ", safe).strip().strip(".")
+        return safe or "export"
+
+    def _theme_index(self):
+        idx = self._active_export_theme_index
+        if idx is None:
+            idx = self.theme_radio.currentIndex()
+        return idx if 0 <= idx < len(THEME_PRESETS) else 0
+
+    def _theme_name(self, idx=None):
+        idx = self._theme_index() if idx is None else idx
+        return THEME_DISPLAY_NAMES[idx] if 0 <= idx < len(THEME_DISPLAY_NAMES) else THEME_DISPLAY_NAMES[0]
+
+    def _build_pdf_pagination_script(self):
+        pw_mm, ph_mm = self._get_page_dims()
+        ppm = 3.7795275591
+        page_h_px = ph_mm * ppm
+        top_mg_px = self.top_margin_spin.value() * ppm
+        content_h_px = page_h_px - (top_mg_px * 2)
+        return r"""
+(function() {
+    var firstPage = document.querySelector('.pdf-page');
+    if (!firstPage) {
+        return {ok: false, reason: 'missing-page'};
+    }
+
+    var pages = Array.from(document.querySelectorAll('.pdf-page'));
+    var cards = Array.from(document.querySelectorAll('.card'));
+    if (!cards.length) {
+        return {ok: true, pages: pages.length, cards: 0, breaks: 0};
+    }
+
+    var firstContent = firstPage.querySelector('.page-content');
+    var pageContentHeight = %.2f;
+    if (!firstContent) {
+        return {ok: false, reason: 'missing-content'};
+    }
+    cards.forEach(function(card) {
+        if (card.parentNode) {
+            card.parentNode.removeChild(card);
+        }
+    });
+
+    for (var i = 1; i < pages.length; i += 1) {
+        pages[i].remove();
+    }
+
+    var currentContent = firstContent;
+    var cardsOnPage = 0;
+    var breaks = 0;
+
+    function num(v) {
+        v = parseFloat(v || '0');
+        return isNaN(v) ? 0 : v;
+    }
+
+    function usedHeight(content, card) {
+        var contentRect = content.getBoundingClientRect();
+        var cardRect = card.getBoundingClientRect();
+        var cardStyle = window.getComputedStyle(card);
+        return Math.ceil(cardRect.bottom - contentRect.top + num(cardStyle.marginBottom));
+    }
+
+    function createPage() {
+        var page = document.createElement('div');
+        page.className = 'pdf-page';
+        var content = document.createElement('div');
+        content.className = 'page-content';
+        page.appendChild(content);
+        firstPage.parentNode.appendChild(page);
+        return {page: page, content: content};
+    }
+
+    cards.forEach(function(card) {
+        currentContent.appendChild(card);
+        var used = usedHeight(currentContent, card);
+        if (cardsOnPage > 0 && used > pageContentHeight + 1) {
+            currentContent.removeChild(card);
+            var next = createPage();
+            currentContent = next.content;
+            currentContent.appendChild(card);
+            cardsOnPage = 1;
+            breaks += 1;
+        } else {
+            cardsOnPage += 1;
+        }
+    });
+
+    return {
+        ok: true,
+        pages: document.querySelectorAll('.pdf-page').length,
+        cards: cards.length,
+        breaks: breaks,
+        pageHeight: %.2f,
+        contentHeight: pageContentHeight,
+        topMargin: %.2f,
+        firstPageHeight: Math.ceil(firstContent.getBoundingClientRect().height || 0)
+    };
+})();
+""" % (content_h_px, page_h_px, top_mg_px)
+
+    def _build_pdf_ready_script(self):
+        return r"""
+(function() {
+    var images = Array.from(document.images || []);
+    var pendingImages = images.filter(function(img) {
+        return !img.complete;
+    }).length;
+    var fontsLoaded = true;
+    if (document.fonts && document.fonts.status) {
+        fontsLoaded = document.fonts.status === 'loaded';
+    }
+    return {
+        ready: fontsLoaded && pendingImages === 0,
+        fontsLoaded: fontsLoaded,
+        pendingImages: pendingImages,
+        imageCount: images.length
+    };
+})();
+"""
 
     def _set_btns(self, on):
         self.legacy_btn.setEnabled(on)
@@ -938,16 +1251,19 @@ class PDFExportDialog(QDialog):
         if not self.debug_cb.isChecked():
             return
         desktop = os.path.expanduser("~/Desktop")
-        short = self._sel().split("::")[-1]
+        short = self._safe_filename(self._sel().split("::")[-1])
         ts = datetime.datetime.now().strftime("%H%M%S")
         html_path = os.path.join(desktop, "anki_debug_{}_{}.html".format(short, ts))
         with open(html_path, "w", encoding="utf-8") as f:
             f.write(html_output)
         logger.save(os.path.join(desktop, "anki_pdf_log.txt"))
 
+    # ------------------------------------------------------------------ actions
     def _on_legacy(self):
         try:
             logger.start("Legacy")
+            self._active_export_theme_index = self.theme_radio.currentIndex()
+            logger.log("Theme: {} ({})".format(self._theme_name(), self._theme_index()))
             html, card_ids = self._build_html(mode="legacy")
             _, p = tempfile.mkstemp(suffix=".html", text=True)
             with open(p, "w", encoding="utf-8") as f:
@@ -964,6 +1280,8 @@ class PDFExportDialog(QDialog):
     def _on_preview(self):
         try:
             logger.start("Preview")
+            self._active_export_theme_index = self.theme_radio.currentIndex()
+            logger.log("Theme: {} ({})".format(self._theme_name(), self._theme_index()))
             html, card_ids = self._build_html(mode="preview")
             _, p = tempfile.mkstemp(suffix=".html", text=True)
             with open(p, "w", encoding="utf-8") as f:
@@ -979,9 +1297,10 @@ class PDFExportDialog(QDialog):
 
     def _on_export(self):
         dn = self._sel()
-        short = dn.split("::")[-1] if "::" in dn else dn
+        short = self._safe_filename(dn.split("::")[-1] if "::" in dn else dn)
+        uid = str(uuid.uuid4()).split('-')[0][:6]
         sp, _ = QFileDialog.getSaveFileName(
-            self, _t("dlg_save_pdf"), "{}.pdf".format(short), _t("pdf_filter"))
+            self, _t("dlg_save_pdf"), "{}_{}.pdf".format(short, uid), _t("pdf_filter"))
         if not sp:
             return
         logger.start("Export")
@@ -989,31 +1308,35 @@ class PDFExportDialog(QDialog):
         self.export_btn.setText(_t("generating"))
         try:
             QApplication.processEvents()
+            self._active_export_theme_index = self.theme_radio.currentIndex()
+            logger.log("Theme: {} ({})".format(self._theme_name(), self._theme_index()))
             html, card_ids = self._build_html(mode="pdf")
             _, self.temp_html_path = tempfile.mkstemp(suffix=".html", text=True)
             with open(self.temp_html_path, "w", encoding="utf-8") as f:
                 f.write(html)
             self._save_debug_artifacts("pdf", card_ids, html)
-            self.page = CustomWebEnginePage()
-            try:
-                self.page.settings().setAttribute(
-                    QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
-            except AttributeError:
-                pass
-            _bg_colors = ["#ffffff", "#111111", "#f8fafc"]
-            _bg = _bg_colors[self.theme_radio.currentIndex()]
-            try:
-                self.page.setBackgroundColor(QColor(_bg))
-            except Exception:
-                pass
-            self.page.loadFinished.connect(lambda ok: self._loaded(ok, sp))
-            self.page.load(QUrl.fromLocalFile(self.temp_html_path))
+            self._start_external_export(sp)
         except Exception as e:
             logger.error("Export", e)
             logger.finish()
             self._save_debug_log()
             showWarning(str(e))
             self._reset()
+
+    def _start_qt_pdf_export(self, path):
+        self.page = CustomWebEnginePage()
+        try:
+            self.page.settings().setAttribute(
+                QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
+        except AttributeError:
+            pass
+        _bg = _theme_tokens(self._theme_index())["body"]
+        try:
+            self.page.setBackgroundColor(QColor(_bg))
+        except Exception:
+            pass
+        self.page.loadFinished.connect(lambda ok: self._loaded(ok, path))
+        self.page.load(QUrl.fromLocalFile(self.temp_html_path))
 
     def _loaded(self, ok, path):
         if not ok:
@@ -1023,14 +1346,125 @@ class PDFExportDialog(QDialog):
             showWarning(_t("msg_error"))
             self._reset()
             return
+        self._wait_for_pdf_layout(path, 0)
 
-        self._do_print(path)
+    def _wait_for_pdf_layout(self, path, attempt):
+        try:
+            self.page.runJavaScript(
+                self._build_pdf_ready_script(),
+                lambda result, attempt=attempt: self._after_pdf_ready(path, attempt, result),
+            )
+        except TypeError:
+            if attempt < 6:
+                QTimer.singleShot(150, lambda: self._wait_for_pdf_layout(path, attempt + 1))
+            else:
+                QTimer.singleShot(150, lambda: self._do_print(path))
+
+    def _after_pdf_ready(self, path, attempt, result):
+        if result and result.get("ready"):
+            QTimer.singleShot(150, lambda: self._do_print(path))
+            return
+        if attempt < 20:
+            QTimer.singleShot(100, lambda: self._wait_for_pdf_layout(path, attempt + 1))
+            return
+        if result:
+            logger.log("Layout wait timeout: {}".format(result))
+        QTimer.singleShot(150, lambda: self._do_print(path))
+
+    def _start_external_export(self, path):
+        self.export_btn.setText(_t("printing"))
+        self._external_export_result = None
+        html_path = self.temp_html_path
+        worker = threading.Thread(
+            target=self._run_external_export_job,
+            args=(html_path, path),
+            daemon=True,
+        )
+        self._external_export_thread = worker
+        worker.start()
+        QTimer.singleShot(100, lambda: self._poll_external_export(path))
+
+    def _poll_external_export(self, path):
+        result = getattr(self, "_external_export_result", None)
+        if result is None:
+            QTimer.singleShot(100, lambda: self._poll_external_export(path))
+            return
+
+        self._external_export_result = None
+        self._external_export_thread = None
+        for entry in result.get("logs", []):
+            logger.log(entry)
+
+        if result.get("success") and os.path.exists(path):
+            self._printed(path, True)
+            return
+
+        self._start_qt_pdf_export(path)
+
+    def _run_external_export_job(self, html_path, path):
+        logs = []
+        try:
+            ok = self._export_pdf_via_weasyprint(path, html_path, logs)
+            if ok:
+                self._external_export_result = {"success": True, "logs": logs}
+                return
+        except Exception as e:
+            logs.append("External export exception: {}".format(e))
+        self._external_export_result = {"success": False, "logs": logs}
+
+    def _export_pdf_via_weasyprint(self, path, html_path, logs):
+        vendor_dir = self._vendor_dir()
+        if not os.path.isdir(vendor_dir):
+            logs.append("PDF engine: WeasyPrint unavailable (.vendor missing)")
+            return False
+
+        python_bin = self._find_weasy_python(logs)
+        if not python_bin:
+            return False
+
+        logs.append("PDF engine: WeasyPrint")
+        script = (
+            "import os, sys\n"
+            "vendor_dir, html_path, pdf_path = sys.argv[1:4]\n"
+            "sys.path.insert(0, vendor_dir)\n"
+            "from weasyprint import HTML\n"
+            "HTML(filename=html_path, base_url=os.path.dirname(html_path)).write_pdf(pdf_path)\n"
+        )
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+            result = subprocess.run(
+                [python_bin, "-c", script, vendor_dir, html_path, path],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if result.returncode != 0:
+                logs.append("WeasyPrint exit: {}".format(result.returncode))
+                if result.stderr:
+                    logs.append("WeasyPrint stderr: {}".format(result.stderr.strip()[:2000]))
+                if result.stdout:
+                    logs.append("WeasyPrint stdout: {}".format(result.stdout.strip()[:2000]))
+                return False
+            if os.path.exists(path):
+                return True
+        except Exception as e:
+            logs.append("WeasyPrint export error: {}".format(e))
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        logs.append("PDF engine: WeasyPrint failed")
+        return False
 
     def _do_print(self, path):
         self.export_btn.setText(_t("printing"))
         try:
+            # Try PyQt6 first
             from PyQt6.QtCore import QMarginsF
             from PyQt6.QtGui import QPageLayout, QPageSize
+
             ps_map = {
                 "A4": QPageSize.PageSizeId.A4,
                 "Letter": QPageSize.PageSizeId.Letter,
@@ -1038,17 +1472,45 @@ class PDFExportDialog(QDialog):
                 "A5": QPageSize.PageSizeId.A5,
             }
             size = QPageSize(ps_map.get(self.page_combo.currentText(), QPageSize.PageSizeId.A4))
-            _mg = float(self.margin_spin.value())
-            _top = float(self.top_margin_spin.value())
-            margins = QMarginsF(_mg, _top, _mg, _top)
-            layout = QPageLayout(size, QPageLayout.Orientation.Portrait, margins,
-                                 QPageLayout.Unit.Millimeter)
+            layout = QPageLayout(
+                size,
+                QPageLayout.Orientation.Portrait,
+                QMarginsF(0, 0, 0, 0),
+                QPageLayout.Unit.Millimeter,
+            )
+
             self.page.pdfPrintingFinished.connect(self._printed)
             self.page.printToPdf(path, layout)
-        except (ImportError, AttributeError):
-            self.page.pdfPrintingFinished.connect(self._printed)
-            self.page.printToPdf(path)
 
+        except (ImportError, AttributeError):
+            try:
+                # Fallback to PyQt5
+                from PyQt5.QtCore import QMarginsF
+                from PyQt5.QtGui import QPageLayout, QPageSize
+
+                ps_map = {
+                    "A4": QPageSize.PageSizeId.A4,
+                    "Letter": QPageSize.PageSizeId.Letter,
+                    "A3": QPageSize.PageSizeId.A3,
+                    "A5": QPageSize.PageSizeId.A5,
+                }
+                psid_val = ps_map.get(self.page_combo.currentText(), QPageSize.PageSizeId.A4)
+
+                size = QPageSize(psid_val)
+                layout = QPageLayout(
+                    size,
+                    QPageLayout.Orientation.Portrait,
+                    QMarginsF(0, 0, 0, 0),
+                    QPageLayout.Unit.Millimeter,
+                )
+
+                self.page.pdfPrintingFinished.connect(self._printed)
+                self.page.printToPdf(path, layout)
+            except Exception:
+                # Minimal fallback - likely to have white margins but better than crash
+                if hasattr(self.page, 'pdfPrintingFinished'):
+                    self.page.pdfPrintingFinished.connect(self._printed)
+                self.page.printToPdf(path)
     def _printed(self, path, success):
         if success and os.path.exists(path):
             logger.log("PDF: {} B".format(os.path.getsize(path)))
@@ -1066,12 +1528,17 @@ class PDFExportDialog(QDialog):
             showInfo(_t("msg_pdf_saved").format(path))
 
     def _save_debug_log(self):
+        try:
+            logger.save(os.path.join(os.path.dirname(__file__), "last_export_log.txt"))
+        except Exception:
+            pass
         if self.debug_cb.isChecked():
             logger.save(os.path.join(os.path.expanduser("~/Desktop"), "anki_pdf_log.txt"))
 
     def _reset(self):
         self.export_btn.setText(_t("btn_export"))
         self._set_btns(True)
+        self._active_export_theme_index = None
 
     def _collect_fc(self):
         fc = {}
@@ -1079,6 +1546,7 @@ class PDFExportDialog(QDialog):
             fc[w.field_name] = w.get_config()
         return fc
 
+    # ------------------------------------------------------------------ settings
     @staticmethod
     def _settings_path():
         return os.path.join(os.path.dirname(__file__), "settings.json")
@@ -1123,7 +1591,7 @@ class PDFExportDialog(QDialog):
         self.zebra_cb.setChecked(s.get("zebra", False))
         self.page_combo.setCurrentIndex(s.get("page", 0))
         self.margin_spin.setValue(s.get("margins", 15))
-        self.top_margin_spin.setValue(s.get("top_margin", 10))
+        self.top_margin_spin.setValue(s.get("top_margin", 15))
         self.padding_spin.setValue(s.get("padding", 12))
         self.gap_spin.setValue(s.get("min_gap", 4))
         self.lh_spin.setValue(s.get("line_height", 1.40))
@@ -1141,6 +1609,7 @@ class PDFExportDialog(QDialog):
             with open(self._settings_path(), "w", encoding="utf-8") as f:
                 json.dump(s, f, indent=2, ensure_ascii=False)
             self.settings_info.setText(_t("msg_settings_saved").format(self._settings_path()))
+            self.settings_info.setVisible(True)
         except Exception as e:
             showWarning(_t("msg_settings_err").format(e))
 
@@ -1154,6 +1623,7 @@ class PDFExportDialog(QDialog):
                 s = json.load(f)
             self._apply_settings(s)
             self.settings_info.setText(_t("msg_settings_loaded"))
+            self.settings_info.setVisible(True)
         except Exception as e:
             showWarning(_t("msg_settings_load_err").format(e))
 
@@ -1176,13 +1646,16 @@ class PDFExportDialog(QDialog):
             except OSError:
                 pass
         self.settings_info.setText(_t("msg_settings_reset"))
+        self.settings_info.setVisible(True)
 
+    # ================================================================== HTML
     def _build_html(self, mode="pdf"):
         deck_name = self._sel()
         media_dir = mw.col.media.dir()
         render_mode = self.render_radio.currentIndex()
         fc = self._collect_fc()
         compact = self.layout_radio.currentIndex() == 1
+        theme_idx = self._theme_index()
 
         fi = self.font_combo.currentIndex()
         font = FONT_OPTIONS[fi][1] if fi < len(FONT_OPTIONS) else FONT_OPTIONS[0][1]
@@ -1191,6 +1664,7 @@ class PDFExportDialog(QDialog):
         padh = max(4, pad - 4)
         min_gap = self.gap_spin.value()
         css_gap = min_gap
+        card_gap = css_gap
         lh = self.lh_spin.value()
         img_h = self.img_h_spin.value()
         ps = self.page_combo.currentText()
@@ -1209,24 +1683,15 @@ class PDFExportDialog(QDialog):
         page_h_px = ph_mm * ppm
         mg_px = mg * ppm
         top_mg_px = top_mg * ppm
-
-        themes = [
-            dict(body="#ffffff", card="#ffffff", brd="#e5e7eb", txt="#111827",
-                 mut="#9ca3af", acc="#111827", div="#e5e7eb", alt="#f9fafb"),
-            dict(body="#111111", card="#1a1a1a", brd="#2a2a2a", txt="#e5e5e5",
-                 mut="#666666", acc="#ffffff", div="#2a2a2a", alt="#151515"),
-            dict(body="#f8fafc", card="#ffffff", brd="#bfdbfe", txt="#0f172a",
-                 mut="#64748b", acc="#1d4ed8", div="#bfdbfe", alt="#eff6ff"),
-        ]
-        t = themes[self.theme_radio.currentIndex()]
+        t = _theme_tokens(theme_idx)
         grid_mode = self.grid_cb.isChecked() if mode == "legacy" else False
 
         cs = self.card_style_combo.currentIndex()
         card_styles = [
-            "border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.08);border:1px solid {};".format(t["brd"]),
+            "border-radius:12px;box-shadow:{};border:1px solid {};".format(t["shadow"], t["brd"]),
             "border-radius:0;border:1px solid {};".format(t["brd"]),
-            "border:none;border-bottom:1px solid {};border-radius:0;".format(t["brd"]),
-            "border-radius:4px;border:2px double {};".format(t["mut"]),
+            "border:none;border-bottom:2px solid {};border-radius:0;box-shadow:none;".format(t["accent_brd"]),
+            "border-radius:10px;border:2px double {};box-shadow:none;".format(t["accent_brd"]),
             "border:none;border-radius:0;box-shadow:none;",
         ]
         card_extra = card_styles[cs]
@@ -1247,6 +1712,7 @@ class PDFExportDialog(QDialog):
         sanitise_css = (
             ".fv [style*='background']{{background:transparent!important}}"
             ".fv [style*='Background']{{background:transparent!important}}"
+            ".fv [bgcolor]{{background:transparent!important}}"
             ".fv .nightMode,.fv .night_mode,.fv .nightmode{{all:unset!important}}"
             ".fv [style*='color:white']{{color:inherit!important}}"
             ".fv [style*='color:#fff']{{color:inherit!important}}"
@@ -1254,6 +1720,7 @@ class PDFExportDialog(QDialog):
             ".fv [style*='width'][style*='height']{{max-width:100%!important;height:auto!important}}"
             ".fv style{{display:none!important}}"
             ".rs [style*='background']{{background:transparent!important}}"
+            ".rs [bgcolor]{{background:transparent!important}}"
             ".rs .nightMode,.rs .night_mode,.rs .nightmode{{all:unset!important}}"
             ".rs [style*='color:white']{{color:inherit!important}}"
             ".rs [style*='color:#fff']{{color:inherit!important}}"
@@ -1308,7 +1775,7 @@ class PDFExportDialog(QDialog):
             ".sub{{text-align:center;color:{mut};font-size:{subsz}px;"
             "font-weight:500;margin:0 0 {subgap}px;letter-spacing:-.01em}}"
             ".card{{{card_extra}background:{card};margin-bottom:{gap}px!important;"
-            "page-break-inside:avoid;overflow:hidden;display:block;width:100%}}"
+            "break-inside:avoid;page-break-inside:avoid;overflow:hidden;display:block;width:100%}}"
             ".cnum{{font-size:9px;font-weight:700;color:{mut};"
             "text-transform:uppercase;letter-spacing:.1em;padding:6px {padx}px 2px}}"
             ".sec-q,.sec-a,.sec-x{{overflow:hidden}}"
@@ -1360,14 +1827,21 @@ class PDFExportDialog(QDialog):
 
         if mode == "pdf":
             wrapper_css = (
-                "@page{{size:{ps};margin:0}}"
+                "@page{{size:{ps};margin:{top_mm:.2f}mm {mg_mm:.2f}mm {top_mm:.2f}mm {mg_mm:.2f}mm;background:{bg}}}"
                 "{content}"
                 "html{{background-color:{bg}!important;min-height:100%;"
                 "-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}}"
                 "body{{background-color:{bg}!important;margin:0;padding:0;"
                 "-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}}"
-                ".page-content{{position:relative;z-index:1}}"
-            ).format(ps=ps, mg=mg, content=content_css, bg=t["body"])
+                ".pdf-bg{{position:fixed;top:0;left:0;right:0;bottom:0;background:{bg};"
+                "z-index:0;-webkit-print-color-adjust:exact!important;"
+                "print-color-adjust:exact!important}}"
+                ".page-break{{display:block;height:0;margin:0;padding:0;"
+                "break-before:page;page-break-before:always}}"
+                ".page-content{{position:relative;z-index:1;display:flow-root}}"
+                "h1.doc-title{{margin-top:0}}"
+            ).format(ps=ps, content=content_css, bg=t["body"],
+                     top_mm=top_mg, mg_mm=mg)
 
         elif mode == "preview":
             wrapper_css = (
@@ -1442,6 +1916,7 @@ class PDFExportDialog(QDialog):
             body_classes.append("compact")
         if grid_mode:
             body_classes.append("grid-mode")
+        body_classes.append(THEME_CLASS_NAMES[theme_idx] if 0 <= theme_idx < len(THEME_CLASS_NAMES) else THEME_CLASS_NAMES[0])
         body_cls = ' class="{}"'.format(" ".join(body_classes)) if body_classes else ''
 
         if mode == "pdf":
@@ -1456,10 +1931,7 @@ class PDFExportDialog(QDialog):
                 '</style></head>'
                 '<body{cls} style="background-color:{bg};margin:0;padding:0;'
                 '-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important">'
-                '<div style="position:fixed;top:0;left:0;right:0;bottom:0;'
-                'background-color:{bg};z-index:0;'
-                '-webkit-print-color-adjust:exact!important;'
-                'print-color-adjust:exact!important"></div>'
+                '<div class="pdf-bg"></div>'
             ).format(cls=body_cls, bg=_bg)
             html = [html_open, wrapper_css, body_open]
         else:
@@ -1471,8 +1943,6 @@ class PDFExportDialog(QDialog):
 
         if mode == "preview":
             html.append('<div class="page"><div class="page-content">')
-        elif mode == "legacy":
-            html.append('<div class="page-content">')
         else:
             html.append('<div class="page-content">')
 
@@ -1536,6 +2006,18 @@ class PDFExportDialog(QDialog):
                 raw = raw.replace("<!--SVG_PROTECT_{}-->".format(i), svg)
             return raw
 
+        def _normalize_block_spacing(raw):
+            if not raw:
+                return raw
+            raw = re.sub(r'(<br\s*/?>\s*){3,}', '<br><br>', raw, flags=re.IGNORECASE)
+            raw = re.sub(
+                r'(?:<(?:div|p)>\s*(?:&nbsp;|\s|<br\s*/?>)*</(?:div|p)>\s*){3,}',
+                '<div><br></div>',
+                raw,
+                flags=re.IGNORECASE,
+            )
+            return raw.strip()
+
         def sanitise_html(raw):
             if not raw:
                 return raw
@@ -1548,16 +2030,35 @@ class PDFExportDialog(QDialog):
                          raw, flags=re.DOTALL | re.IGNORECASE)
             raw = re.sub(r"<h2[^>]*>(.*?)</h2>", r"<p><strong>\1</strong></p>",
                          raw, flags=re.DOTALL | re.IGNORECASE)
+            raw = re.sub(r"\sbgcolor=(['\"]).*?\1", "", raw, flags=re.IGNORECASE | re.DOTALL)
+
+            def _clean_style_attr(match):
+                quote = match.group(1)
+                style = match.group(2)
+                style = re.sub(
+                    r'(?i)(?:^|;)\s*background(?:-color|-image)?\s*:[^;]+;?',
+                    ';',
+                    style,
+                )
+                style = re.sub(
+                    r'(?i)(?:^|;)\s*color\s*:\s*(?:white|#fff(?:fff)?|rgb\(\s*255\s*,\s*255\s*,\s*255\s*\))\s*;?',
+                    ';',
+                    style,
+                )
+                style = re.sub(r'\s+', ' ', style)
+                style = re.sub(r';{2,}', ';', style).strip(' ;')
+                return ' style={}{}{}'.format(quote, style, quote) if style else ''
+
             raw = re.sub(
-                r'(style="[^"]*?)background(?:-color)?:\s*(?:#[0-3][0-9a-fA-F]{2,5}|'
-                r'rgb\(\s*[0-4]\d|black|#000[^"]*)',
-                r'\1background:transparent', raw, flags=re.IGNORECASE)
-            raw = re.sub(
-                r'(style="[^"]*?)color:\s*(?:white|#fff(?:fff)?)\b',
-                r'\1color:inherit', raw, flags=re.IGNORECASE)
+                r'\sstyle=(["\'])(.*?)\1',
+                _clean_style_attr,
+                raw,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
             raw = re.sub(
                 r'width:\s*(\d{4,})px',
                 lambda m: "width:100%" if int(m.group(1)) > 800 else m.group(0), raw)
+            raw = _normalize_block_spacing(raw)
             return _restore_svg(raw, svgs)
 
         def proc_raw(raw):
@@ -1598,17 +2099,23 @@ class PDFExportDialog(QDialog):
             c = sanitise_html(c.strip())
             return _restore_svg(c, svgs)
 
-        content_h_px = page_h_px - 2 * top_mg_px
+        # ---- FIX: improved page height calculations ----
+        content_h_px = page_h_px - top_mg_px - top_mg_px  # top + bottom margin
+        break_h_px = content_h_px
+
         if show_title:
-            _title_h = int((bsz + 6) * lh + 22)  # h1
-            _sub_h   = int((bsz - 2) * lh + min_gap + 2) if "::" in deck_name else 0
+            _title_h = int((bsz + 6) * lh + 22)
+            _sub_h = int((bsz - 2) * lh + min_gap + 2) if "::" in deck_name else 0
             title_h_est = _title_h + _sub_h
         else:
             title_h_est = 0
         accumulated_h = [title_h_est]
+        cards_on_page = [0]
 
-        def emit_page_break():
+        # ---- FIX: clean page breaks without spacer images ----
+        def emit_page_break(use_margin=True):
             accumulated_h[0] = 0
+            cards_on_page[0] = 0
             if mode == "preview":
                 return (
                     '</div></div>'
@@ -1616,24 +2123,64 @@ class PDFExportDialog(QDialog):
                     '<span>' + _t("page_break_lbl") + '</span></div>'
                     '<div class="page"><div class="page-content">'
                 )
-            return '<div style="break-before:page;height:0;margin:0;padding:0"></div>'
+            return '<div class="page-break"></div>'
+
 
         def _text_len(html_str):
             return len(re.sub(r'<[^>]+>', '', html_str or ''))
 
-        def estimate_card_h(sections_count, has_image, text_chars=0):
-            overhead = (18 if show_nums else 0) + sections_count * padh * 2 + max(0, sections_count - 1)
-            cpp = max(15, int(65 * 13.0 / max(bsz, 8)))
+        # ---- FIX: improved card height estimation ----
+        def estimate_card_h(sections_count, has_image, text_chars=0, n_images=1):
+            overhead = (20 if show_nums else 0) + sections_count * (padh * 2 + 2) + max(0, sections_count - 1)
+            effective_w = card_max_w if card_max_w > 0 else (pw_mm * ppm - 2 * mg_px)
+            cpp = max(10, int((effective_w - pad * 2) / (bsz * 0.6)))
             if text_chars > 0:
-                n_lines = max(sections_count * 2, (text_chars + cpp - 1) // cpp)
+                n_lines = max(sections_count, (text_chars + cpp - 1) // cpp)
             else:
-                n_lines = sections_count * 3
+                n_lines = sections_count * 2
             text_h = n_lines * bsz * lh
-            img_est = min(img_h, 200) if has_image else 0
-            return int(overhead + text_h + img_est + min_gap + 10)
+            img_est = min(n_images, 5) * min(img_h, 200) if has_image else 0
+            return int(overhead + text_h + img_est + 4)
+
+        def pack_compact_pages(items):
+            # Compact mode may reorder cards to reduce page waste.
+            sorted_items = sorted(items, key=lambda c: (-c[1], c[0]))
+            pages = []
+            pages_used = []
+            page_counts = []
+
+            for item in sorted_items:
+                _, est, _ = item
+                best_page = None
+                best_remaining = None
+
+                for pi in range(len(pages)):
+                    page_capacity = break_h_px - (title_h_est if pi == 0 else 0)
+                    needed_h = est + (card_gap if page_counts[pi] > 0 else 0)
+                    remaining = page_capacity - (pages_used[pi] + needed_h)
+                    if remaining < 0:
+                        continue
+                    if best_remaining is None or remaining < best_remaining:
+                        best_page = pi
+                        best_remaining = remaining
+
+                if best_page is None:
+                    pages.append([item])
+                    pages_used.append(est)
+                    page_counts.append(1)
+                else:
+                    pages[best_page].append(item)
+                    pages_used[best_page] += est + (card_gap if page_counts[best_page] > 0 else 0)
+                    page_counts[best_page] += 1
+
+            for page in pages:
+                page.sort(key=lambda c: c[0])
+
+            return pages
 
         cards_ok = 0
         cards_skip = 0
+        card_items = []
 
         if render_mode == 1:
             for idx, cid in enumerate(card_ids):
@@ -1653,32 +2200,40 @@ class PDFExportDialog(QDialog):
                         continue
 
                     sec_count = (1 if q else 0) + (1 if a else 0)
-                    has_img = "base64" in q or "base64" in a
-                    est = estimate_card_h(sec_count, has_img, _text_len((q or '') + (a or '')))
-                    accumulated_h[0] += est
-
-                    if accumulated_h[0] > content_h_px:
-                        pb = emit_page_break()
-                        if pb:
-                            html.append(pb)
-                        accumulated_h[0] = est
+                    has_img = "base64" in (q or '') or "base64" in (a or '')
+                    n_imgs = max(1, (q or '').count('base64') + (a or '').count('base64')) if has_img else 0
+                    est = estimate_card_h(sec_count, has_img, _text_len((q or '') + (a or '')), n_imgs)
 
                     alt = ' style="background:{}"'.format(t["alt"]) if zebra and idx % 2 == 1 else ""
-                    html.append('<div class="card"{}>'.format(alt))
+                    parts = ['<div class="card"{}>'.format(alt)]
                     if show_nums:
-                        html.append('<div class="cnum">#{} &middot; {}</div>'.format(idx + 1, nt_name))
+                        parts.append('<div class="cnum">#{} &middot; {}</div>'.format(idx + 1, nt_name))
                     if q:
-                        html.append(
+                        parts.append(
                             '<div class="sec-q"><div class="rs">'
                             '<div class="label">{}</div>{}</div></div>'.format(_t("rendered_front"), q))
                     if q and a:
-                        html.append('<hr class="sec-div">')
+                        parts.append('<hr class="sec-div">')
                     if a:
-                        html.append(
+                        parts.append(
                             '<div class="sec-a"><div class="rs">'
                             '<div class="label">{}</div>{}</div></div>'.format(
                                 _t("rendered_back"), a))
-                    html.append("</div>")
+                    parts.append("</div>")
+
+                    if compact and mode in ("pdf", "preview"):
+                        card_items.append((idx, est, parts))
+                    elif mode == "pdf":
+                        html.extend(parts)
+                    else:
+                        needed_h = est + (card_gap if cards_on_page[0] > 0 else 0)
+                        if accumulated_h[0] + needed_h > content_h_px and cards_on_page[0] > 0:
+                            pb = emit_page_break(est <= page_h_px * 0.75)
+                            if pb:
+                                html.append(pb)
+                        accumulated_h[0] += est + (card_gap if cards_on_page[0] > 0 else 0)
+                        cards_on_page[0] += 1
+                        html.extend(parts)
                     cards_ok += 1
                 except Exception as e:
                     logger.error("Karta #{}".format(idx), e)
@@ -1715,34 +2270,56 @@ class PDFExportDialog(QDialog):
                     sec_count = (1 if sq else 0) + (1 if sa else 0) + (1 if sx else 0)
                     all_content = "".join(sq) + "".join(sa) + "".join(sx)
                     has_img = "base64" in all_content
-                    est = estimate_card_h(sec_count, has_img, _text_len(all_content))
-                    accumulated_h[0] += est
-
-                    if accumulated_h[0] > content_h_px:
-                        pb = emit_page_break()
-                        if pb:
-                            html.append(pb)
-                        accumulated_h[0] = est
+                    n_imgs = max(1, all_content.count('base64')) if has_img else 0
+                    est = estimate_card_h(sec_count, has_img, _text_len(all_content), n_imgs)
 
                     alt = ' style="background:{}"'.format(t["alt"]) if zebra and idx % 2 == 1 else ""
-                    html.append('<div class="card"{}>'.format(alt))
+                    parts = ['<div class="card"{}>'.format(alt)]
                     if show_nums:
-                        html.append('<div class="cnum">#{}</div>'.format(idx + 1))
+                        parts.append('<div class="cnum">#{}</div>'.format(idx + 1))
                     if sq:
-                        html.append('<div class="sec-q">{}</div>'.format("".join(sq)))
+                        parts.append('<div class="sec-q">{}</div>'.format("".join(sq)))
                     if sq and sa:
-                        html.append('<hr class="sec-div">')
+                        parts.append('<hr class="sec-div">')
                     if sa:
-                        html.append('<div class="sec-a">{}</div>'.format("".join(sa)))
+                        parts.append('<div class="sec-a">{}</div>'.format("".join(sa)))
                     if sx and (sq or sa):
-                        html.append('<hr class="sec-div">')
+                        parts.append('<hr class="sec-div">')
                     if sx:
-                        html.append('<div class="sec-x">{}</div>'.format("".join(sx)))
-                    html.append("</div>")
+                        parts.append('<div class="sec-x">{}</div>'.format("".join(sx)))
+                    parts.append("</div>")
+
+                    if compact and mode in ("pdf", "preview"):
+                        card_items.append((idx, est, parts))
+                    elif mode == "pdf":
+                        html.extend(parts)
+                    else:
+                        needed_h = est + (card_gap if cards_on_page[0] > 0 else 0)
+                        if accumulated_h[0] + needed_h > content_h_px and cards_on_page[0] > 0:
+                            pb = emit_page_break(est <= page_h_px * 0.75)
+                            if pb:
+                                html.append(pb)
+                        accumulated_h[0] += est + (card_gap if cards_on_page[0] > 0 else 0)
+                        cards_on_page[0] += 1
+                        html.extend(parts)
                     cards_ok += 1
                 except Exception as e:
                     logger.error("Karta #{}".format(idx), e)
                     cards_skip += 1
+
+        if compact and card_items and mode in ("pdf", "preview"):
+            pages = pack_compact_pages(card_items)
+            for pi, page_cards in enumerate(pages):
+                if pi > 0:
+                    pb = emit_page_break()
+                    if pb:
+                        html.append(pb)
+                for c_idx, est, parts in page_cards:
+                    html.extend(parts)
+        elif compact and card_items:
+            card_items.sort(key=lambda c: c[0])
+            for _, _, parts in card_items:
+                html.extend(parts)
 
         if mode == "preview":
             html.append("</div></div>")
