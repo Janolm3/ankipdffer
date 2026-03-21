@@ -92,9 +92,9 @@ Exported HTML files aren't just static! Click any image to launch a full-screen,
 
 ---
 
-| Todo |
-|---|---|
-| **Weird spacing issue**| ❌ |
+| Todo | |
+| :--- | :--- |
+| **Weird spacing issue** | ❌ |
 
 ---
 
