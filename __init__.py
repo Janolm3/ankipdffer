@@ -274,6 +274,7 @@ class InlineRadioGroup(QWidget):
         ly.setSpacing(12)
         self.group = QButtonGroup(self)
         self.buttons = []
+        self._current_index = default if 0 <= default < len(options) else 0
         for i, label in enumerate(options):
             rb = QRadioButton(label)
             rb.setStyleSheet(
@@ -284,17 +285,23 @@ class InlineRadioGroup(QWidget):
             )
             if i == default:
                 rb.setChecked(True)
+            rb.toggled.connect(lambda checked, idx=i: self._on_toggled(idx, checked))
             self.group.addButton(rb, i)
             self.buttons.append(rb)
             ly.addWidget(rb)
         ly.addStretch()
         self.setLayout(ly)
 
+    def _on_toggled(self, idx, checked):
+        if checked:
+            self._current_index = idx
+
     def currentIndex(self):
-        return self.group.checkedId()
+        return self._current_index
 
     def setCurrentIndex(self, idx):
         if 0 <= idx < len(self.buttons):
+            self._current_index = idx
             self.buttons[idx].setChecked(True)
 
 
@@ -468,16 +475,16 @@ THEME_PRESETS = [
         accent_brd="#cbd5e1",
     ),
     dict(
-        body="#0f1115",
-        card="#171b22",
-        brd="#2b3442",
-        txt="#f8fafc",
-        mut="#94a3b8",
-        acc="#f8fafc",
-        div="#2b3442",
-        alt="#12161d",
+        body="#111111",
+        card="#1a1a1a",
+        brd="#2a2a2a",
+        txt="#e5e5e5",
+        mut="#666666",
+        acc="#ffffff",
+        div="#2a2a2a",
+        alt="#151515",
         shadow="0 16px 30px rgba(0,0,0,.35), 0 4px 12px rgba(0,0,0,.24)",
-        accent_brd="#475569",
+        accent_brd="#3f3f46",
     ),
     dict(
         body="#f3f7ff",
@@ -492,6 +499,9 @@ THEME_PRESETS = [
         accent_brd="#93c5fd",
     ),
 ]
+
+THEME_CLASS_NAMES = ["theme-light", "theme-dark", "theme-pro"]
+THEME_DISPLAY_NAMES = ["Light", "Dark", "Pro"]
 
 
 def _theme_tokens(index):
@@ -551,6 +561,7 @@ class PDFExportDialog(QDialog):
         else:
             self.resize(820, 640)
             self.setMinimumSize(600, 440)
+        self._active_export_theme_index = None
 
         root = QVBoxLayout()
         root.setContentsMargins(16, 16, 16, 16)
@@ -1103,6 +1114,16 @@ class PDFExportDialog(QDialog):
         safe = re.sub(r"\s+", " ", safe).strip().strip(".")
         return safe or "export"
 
+    def _theme_index(self):
+        idx = self._active_export_theme_index
+        if idx is None:
+            idx = self.theme_radio.currentIndex()
+        return idx if 0 <= idx < len(THEME_PRESETS) else 0
+
+    def _theme_name(self, idx=None):
+        idx = self._theme_index() if idx is None else idx
+        return THEME_DISPLAY_NAMES[idx] if 0 <= idx < len(THEME_DISPLAY_NAMES) else THEME_DISPLAY_NAMES[0]
+
     def _build_pdf_pagination_script(self):
         pw_mm, ph_mm = self._get_page_dims()
         ppm = 3.7795275591
@@ -1234,6 +1255,8 @@ class PDFExportDialog(QDialog):
     def _on_legacy(self):
         try:
             logger.start("Legacy")
+            self._active_export_theme_index = self.theme_radio.currentIndex()
+            logger.log("Theme: {} ({})".format(self._theme_name(), self._theme_index()))
             html, card_ids = self._build_html(mode="legacy")
             _, p = tempfile.mkstemp(suffix=".html", text=True)
             with open(p, "w", encoding="utf-8") as f:
@@ -1250,6 +1273,8 @@ class PDFExportDialog(QDialog):
     def _on_preview(self):
         try:
             logger.start("Preview")
+            self._active_export_theme_index = self.theme_radio.currentIndex()
+            logger.log("Theme: {} ({})".format(self._theme_name(), self._theme_index()))
             html, card_ids = self._build_html(mode="preview")
             _, p = tempfile.mkstemp(suffix=".html", text=True)
             with open(p, "w", encoding="utf-8") as f:
@@ -1276,6 +1301,8 @@ class PDFExportDialog(QDialog):
         self.export_btn.setText(_t("generating"))
         try:
             QApplication.processEvents()
+            self._active_export_theme_index = self.theme_radio.currentIndex()
+            logger.log("Theme: {} ({})".format(self._theme_name(), self._theme_index()))
             html, card_ids = self._build_html(mode="pdf")
             _, self.temp_html_path = tempfile.mkstemp(suffix=".html", text=True)
             with open(self.temp_html_path, "w", encoding="utf-8") as f:
@@ -1296,7 +1323,7 @@ class PDFExportDialog(QDialog):
                 QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
         except AttributeError:
             pass
-        _bg = _theme_tokens(self.theme_radio.currentIndex())["body"]
+        _bg = _theme_tokens(self._theme_index())["body"]
         try:
             self.page.setBackgroundColor(QColor(_bg))
         except Exception:
@@ -1504,6 +1531,7 @@ class PDFExportDialog(QDialog):
     def _reset(self):
         self.export_btn.setText(_t("btn_export"))
         self._set_btns(True)
+        self._active_export_theme_index = None
 
     def _collect_fc(self):
         fc = {}
@@ -1617,6 +1645,7 @@ class PDFExportDialog(QDialog):
         render_mode = self.render_radio.currentIndex()
         fc = self._collect_fc()
         compact = self.layout_radio.currentIndex() == 1
+        theme_idx = self._theme_index()
 
         fi = self.font_combo.currentIndex()
         font = FONT_OPTIONS[fi][1] if fi < len(FONT_OPTIONS) else FONT_OPTIONS[0][1]
@@ -1644,7 +1673,7 @@ class PDFExportDialog(QDialog):
         page_h_px = ph_mm * ppm
         mg_px = mg * ppm
         top_mg_px = top_mg * ppm
-        t = _theme_tokens(self.theme_radio.currentIndex())
+        t = _theme_tokens(theme_idx)
         grid_mode = self.grid_cb.isChecked() if mode == "legacy" else False
 
         cs = self.card_style_combo.currentIndex()
@@ -1673,6 +1702,7 @@ class PDFExportDialog(QDialog):
         sanitise_css = (
             ".fv [style*='background']{{background:transparent!important}}"
             ".fv [style*='Background']{{background:transparent!important}}"
+            ".fv [bgcolor]{{background:transparent!important}}"
             ".fv .nightMode,.fv .night_mode,.fv .nightmode{{all:unset!important}}"
             ".fv [style*='color:white']{{color:inherit!important}}"
             ".fv [style*='color:#fff']{{color:inherit!important}}"
@@ -1680,6 +1710,7 @@ class PDFExportDialog(QDialog):
             ".fv [style*='width'][style*='height']{{max-width:100%!important;height:auto!important}}"
             ".fv style{{display:none!important}}"
             ".rs [style*='background']{{background:transparent!important}}"
+            ".rs [bgcolor]{{background:transparent!important}}"
             ".rs .nightMode,.rs .night_mode,.rs .nightmode{{all:unset!important}}"
             ".rs [style*='color:white']{{color:inherit!important}}"
             ".rs [style*='color:#fff']{{color:inherit!important}}"
@@ -1786,7 +1817,7 @@ class PDFExportDialog(QDialog):
 
         if mode == "pdf":
             wrapper_css = (
-                "@page{{size:{ps};margin:{top_mm:.2f}mm {mg_mm:.2f}mm {top_mm:.2f}mm {mg_mm:.2f}mm}}"
+                "@page{{size:{ps};margin:{top_mm:.2f}mm {mg_mm:.2f}mm {top_mm:.2f}mm {mg_mm:.2f}mm;background:{bg}}}"
                 "{content}"
                 "html{{background-color:{bg}!important;min-height:100%;"
                 "-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}}"
@@ -1873,6 +1904,7 @@ class PDFExportDialog(QDialog):
             body_classes.append("compact")
         if grid_mode:
             body_classes.append("grid-mode")
+        body_classes.append(THEME_CLASS_NAMES[theme_idx] if 0 <= theme_idx < len(THEME_CLASS_NAMES) else THEME_CLASS_NAMES[0])
         body_cls = ' class="{}"'.format(" ".join(body_classes)) if body_classes else ''
 
         if mode == "pdf":
@@ -1986,13 +2018,31 @@ class PDFExportDialog(QDialog):
                          raw, flags=re.DOTALL | re.IGNORECASE)
             raw = re.sub(r"<h2[^>]*>(.*?)</h2>", r"<p><strong>\1</strong></p>",
                          raw, flags=re.DOTALL | re.IGNORECASE)
+            raw = re.sub(r"\sbgcolor=(['\"]).*?\1", "", raw, flags=re.IGNORECASE | re.DOTALL)
+
+            def _clean_style_attr(match):
+                quote = match.group(1)
+                style = match.group(2)
+                style = re.sub(
+                    r'(?i)(?:^|;)\s*background(?:-color|-image)?\s*:[^;]+;?',
+                    ';',
+                    style,
+                )
+                style = re.sub(
+                    r'(?i)(?:^|;)\s*color\s*:\s*(?:white|#fff(?:fff)?|rgb\(\s*255\s*,\s*255\s*,\s*255\s*\))\s*;?',
+                    ';',
+                    style,
+                )
+                style = re.sub(r'\s+', ' ', style)
+                style = re.sub(r';{2,}', ';', style).strip(' ;')
+                return ' style={}{}{}'.format(quote, style, quote) if style else ''
+
             raw = re.sub(
-                r'(style="[^"]*?)background(?:-color)?:\s*(?:#[0-3][0-9a-fA-F]{2,5}|'
-                r'rgb\(\s*[0-4]\d|black|#000[^"]*)',
-                r'\1background:transparent', raw, flags=re.IGNORECASE)
-            raw = re.sub(
-                r'(style="[^"]*?)color:\s*(?:white|#fff(?:fff)?)\b',
-                r'\1color:inherit', raw, flags=re.IGNORECASE)
+                r'\sstyle=(["\'])(.*?)\1',
+                _clean_style_attr,
+                raw,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
             raw = re.sub(
                 r'width:\s*(\d{4,})px',
                 lambda m: "width:100%" if int(m.group(1)) > 800 else m.group(0), raw)
