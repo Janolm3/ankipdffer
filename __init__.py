@@ -845,7 +845,7 @@ class PDFExportDialog(QDialog):
         # --- Bottom buttons ---
         bottom = QHBoxLayout()
         bottom.setContentsMargins(20, 0, 20, 20)
-        v_lbl = QLabel("v 1.02")
+        v_lbl = QLabel("v 1.2")
         v_lbl.setStyleSheet("color:#71717a;font-size:11px;font-weight:600;")
         bottom.addWidget(v_lbl)
         bottom.addStretch()
