@@ -25,7 +25,9 @@ except ImportError:
 _STRINGS = {
     "en": {
         "window_title": "Anki → PDF",
-        "menu_action": "Export Deck to PDF...",
+        "menu_root": "AnkiPdffer Dev (Main)",
+        "menu_action": "Open export dialog...",
+        "menu_quick_legacy": "Quick Legacy HTML (current deck)",
         "deck_group": "Deck",
         "deck_lbl": "Deck:",
         "subdeck_lbl": "Subdeck:",
@@ -96,6 +98,12 @@ _STRINGS = {
         "btn_export": "Export PDF",
         "generating": "Generating…",
         "printing": "Printing…",
+        "busy_legacy": "Generating Legacy HTML...",
+        "busy_preview": "Generating PDF preview...",
+        "busy_pdf_html": "Preparing PDF...",
+        "busy_pdf_render": "Rendering PDF...",
+        "busy_opening": "Opening result...",
+        "busy_hint": "Keep this window open while Anki prepares the file.",
         "dlg_save_pdf": "Save PDF",
         "pdf_filter": "PDF (*.pdf)",
         "msg_settings_saved": "Saved: {}",
@@ -120,7 +128,9 @@ _STRINGS = {
     },
     "pl": {
         "window_title": "Anki → PDF",
-        "menu_action": "Eksportuj Deck do PDF...",
+        "menu_root": "AnkiPdffer Dev (Main)",
+        "menu_action": "Otwórz okno eksportu...",
+        "menu_quick_legacy": "Szybki Legacy HTML (bieżący deck)",
         "deck_group": "Deck",
         "deck_lbl": "Deck:",
         "subdeck_lbl": "Subdeck:",
@@ -192,6 +202,12 @@ _STRINGS = {
         "btn_export": "Eksportuj PDF",
         "generating": "Generowanie…",
         "printing": "Drukowanie…",
+        "busy_legacy": "Generowanie Legacy HTML...",
+        "busy_preview": "Generowanie podglądu PDF...",
+        "busy_pdf_html": "Przygotowywanie PDF...",
+        "busy_pdf_render": "Renderowanie PDF...",
+        "busy_opening": "Otwieranie wyniku...",
+        "busy_hint": "Zostaw to okno otwarte, Anki przygotowuje plik.",
         "dlg_save_pdf": "Zapisz PDF",
         "pdf_filter": "PDF (*.pdf)",
         "msg_settings_saved": "Zapisano: {}",
@@ -277,12 +293,7 @@ class InlineRadioGroup(QWidget):
         self._current_index = default if 0 <= default < len(options) else 0
         for i, label in enumerate(options):
             rb = QRadioButton(label)
-            rb.setStyleSheet(
-                "QRadioButton{spacing:6px;padding:4px 0;margin:0;border:none;background:transparent}"
-                "QRadioButton::indicator{width:14px;height:14px;border:none;margin:0}"
-                "QRadioButton:hover{border:none;background:transparent}"
-                "QRadioButton:pressed{border:none;background:transparent}"
-            )
+            rb.setCursor(Qt.CursorShape.PointingHandCursor)
             if i == default:
                 rb.setChecked(True)
             rb.toggled.connect(lambda checked, idx=i: self._on_toggled(idx, checked))
@@ -373,7 +384,9 @@ class FieldConfigWidget(QWidget):
         row.addWidget(self.size_radio)
         self.bold_cb = QCheckBox("B")
         self.bold_cb.setChecked(is_front)
-        self.bold_cb.setStyleSheet("font-weight:bold")
+        f_bold = self.bold_cb.font()
+        f_bold.setBold(True)
+        self.bold_cb.setFont(f_bold)
         row.addWidget(self.bold_cb)
         self.label_cb = QCheckBox(_t("field_lbl_label"))
         self.label_cb.setChecked(not is_front)
@@ -406,10 +419,14 @@ class FieldConfigWidget(QWidget):
         self.align_combo.addItems(_t("field_align"))
         ap.addWidget(self.align_combo)
         self.italic_cb = QCheckBox("I")
-        self.italic_cb.setStyleSheet("font-style:italic")
+        f_ital = self.italic_cb.font()
+        f_ital.setItalic(True)
+        self.italic_cb.setFont(f_ital)
         ap.addWidget(self.italic_cb)
         self.underline_cb = QCheckBox("U")
-        self.underline_cb.setStyleSheet("text-decoration:underline")
+        f_under = self.underline_cb.font()
+        f_under.setUnderline(True)
+        self.underline_cb.setFont(f_under)
         ap.addWidget(self.underline_cb)
         ap.addStretch()
         self.adv_panel.setLayout(ap)
@@ -532,9 +549,29 @@ DEFAULT_SETTINGS = {
     "card_style": 0,
     "grid": False,
     "language": "en",
-    "debug": False,
+    "debug": True,
     "high_contrast": False,
 }
+
+
+def _is_dark_mode():
+    try:
+        from aqt import mw
+        if mw and mw.pm:
+            return bool(mw.pm.night_mode())
+    except Exception:
+        pass
+    try:
+        from aqt.theme import theme_manager
+        return bool(theme_manager.night_mode)
+    except Exception:
+        pass
+    try:
+        from aqt import theme_manager
+        return bool(theme_manager.night_mode)
+    except Exception:
+        pass
+    return False
 
 
 class PDFExportDialog(QDialog):
@@ -551,21 +588,226 @@ class PDFExportDialog(QDialog):
         self.field_widgets = []
         self._all_decks = []
 
+        is_dark = _is_dark_mode()
+        if is_dark:
+            bg_color = "#101010"
+            card_bg = "#18181b"
+            panel_bg = "#202022"
+            border_color = "#27272a"
+            text_color = "#f4f4f5"
+            muted_text = "#a1a1aa"
+            accent_color = "#3b82f6"
+            accent_hover = "#60a5fa"
+            hover_bg = "#27272a"
+            selected_bg = "rgba(59, 130, 246, 0.15)"
+        else:
+            bg_color = "#fcfcfc"
+            card_bg = "#f4f4f5"
+            panel_bg = "#ffffff"
+            border_color = "#e4e4e7"
+            text_color = "#18181b"
+            muted_text = "#71717a"
+            accent_color = "#2563eb"
+            accent_hover = "#3b82f6"
+            hover_bg = "#e4e4e7"
+            selected_bg = "rgba(37, 99, 235, 0.12)"
+
+        dialog_css = """
+            PDFExportDialog, QStackedWidget, QStackedWidget > QWidget {{
+                background-color: {bg_color};
+                color: {text_color};
+            }}
+            QScrollArea {{
+                border: none;
+                background-color: transparent;
+            }}
+            QScrollArea > QWidget {{
+                background-color: transparent;
+            }}
+            QWidget#FieldsContainer {{
+                background-color: transparent;
+            }}
+            FieldConfigWidget {{
+                background-color: {card_bg};
+                border-bottom: 1px solid {border_color};
+                border-radius: 4px;
+                padding: 6px;
+            }}
+            QLabel, QCheckBox, QRadioButton, QGroupBox {{
+                background-color: transparent;
+                color: {text_color};
+            }}
+            QLabel {{
+                font-size: 13px;
+            }}
+            QLabel#HintLabel {{
+                color: {muted_text};
+                font-size: 11px;
+                padding: 0 4px 4px;
+            }}
+            QLabel#VersionLabel {{
+                color: {muted_text};
+                font-size: 11px;
+                font-weight: 600;
+            }}
+            QLabel#SettingsInfoLabel {{
+                color: {muted_text};
+                font-size: 12px;
+            }}
+            QLabel#BusyLabel {{
+                color: {muted_text};
+                font-size: 12px;
+                font-weight: 600;
+            }}
+            QGroupBox {{
+                font-size: 13px;
+                font-weight: 700;
+                color: {text_color};
+                border: none;
+                border-top: 1px solid {border_color};
+                margin-top: 18px;
+                padding-top: 16px;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                left: 0px;
+                padding: 0 8px 0 0;
+                color: {accent_color};
+            }}
+            QComboBox, QSpinBox, QDoubleSpinBox, NoScrollComboBox, QLineEdit, QPlainTextEdit {{
+                background-color: {panel_bg};
+                border: 1px solid {border_color};
+                border-radius: 6px;
+                padding: 6px 10px;
+                color: {text_color};
+                font-size: 13px;
+                min-height: 20px;
+            }}
+            QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover, QLineEdit:hover {{
+                border-color: {accent_color};
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                width: 20px;
+            }}
+            QComboBox::down-arrow {{
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 5px solid {muted_text};
+                width: 0;
+                height: 0;
+                margin-right: 8px;
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: {card_bg};
+                border: 1px solid {border_color};
+                selection-background-color: {accent_color};
+                selection-color: #ffffff;
+                color: {text_color};
+                outline: none;
+                border-radius: 6px;
+            }}
+            QCheckBox {{
+                spacing: 8px;
+                font-size: 13px;
+                color: {text_color};
+            }}
+            QCheckBox::indicator {{
+                width: 16px;
+                height: 16px;
+                border: 2px solid {border_color};
+                border-radius: 4px;
+                background: {panel_bg};
+            }}
+            QCheckBox::indicator:hover {{
+                border-color: {accent_color};
+            }}
+            QCheckBox::indicator:checked {{
+                border-color: {accent_color};
+                background-color: {accent_color};
+                background-image: qradialgradient(cx:0.5, cy:0.5, radius:0.25, fx:0.5, fy:0.5, stop:0 #ffffff, stop:0.7 #ffffff, stop:0.8 {accent_color}, stop:1.0 {accent_color});
+            }}
+            QRadioButton {{
+                spacing: 6px;
+                padding: 4px 0;
+                margin: 0;
+                border: none;
+                background: transparent;
+                font-size: 13px;
+                color: {text_color};
+            }}
+            QRadioButton::indicator {{
+                width: 16px;
+                height: 16px;
+                border: 2px solid {border_color};
+                border-radius: 9px;
+                background: {panel_bg};
+            }}
+            QRadioButton::indicator:hover {{
+                border-color: {accent_color};
+            }}
+            QRadioButton::indicator:checked {{
+                border-color: {accent_color};
+                background-color: {panel_bg};
+                background-image: qradialgradient(cx:0.5, cy:0.5, radius:0.35, fx:0.5, fy:0.5, stop:0 {accent_color}, stop:0.7 {accent_color}, stop:0.8 {panel_bg}, stop:1.0 {panel_bg});
+            }}
+            QScrollBar:vertical {{
+                background: transparent;
+                width: 6px;
+                margin: 0px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {border_color};
+                min-height: 20px;
+                border-radius: 3px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {accent_color};
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                background: none;
+                border: none;
+                height: 0px;
+            }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+                background: none;
+            }}
+        """.format(
+            bg_color=bg_color,
+            card_bg=card_bg,
+            panel_bg=panel_bg,
+            border_color=border_color,
+            text_color=text_color,
+            muted_text=muted_text,
+            accent_color=accent_color
+        )
+        self.setStyleSheet(dialog_css)
+
+        self._busy_timer = QTimer(self)
+        self._busy_timer.timeout.connect(self._animate_busy)
+        self._busy_val = 0
+        self._spinner_idx = 0
+        self._spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        self._base_busy_message = ""
+
         screen = QApplication.primaryScreen()
         if screen:
             sg = screen.availableGeometry()
-            w = max(700, min(int(sg.width() * 0.52), 960))
-            h = max(520, min(int(sg.height() * 0.68), 740))
+            w = max(980, min(int(sg.width() * 0.78), 1280))
+            h = max(640, min(int(sg.height() * 0.78), 820))
             self.resize(w, h)
-            self.setMinimumSize(600, 440)
+            self.setMinimumSize(860, 560)
         else:
-            self.resize(820, 640)
-            self.setMinimumSize(600, 440)
+            self.resize(1100, 720)
+            self.setMinimumSize(860, 560)
         self._active_export_theme_index = None
+        self._busy_depth = 0
 
         root = QVBoxLayout()
-        root.setContentsMargins(16, 16, 16, 16)
-        root.setSpacing(12)
+        root.setContentsMargins(18, 18, 18, 14)
+        root.setSpacing(10)
 
         deck_group = QGroupBox(_t("deck_group"))
         dg = QHBoxLayout()
@@ -588,31 +830,44 @@ class PDFExportDialog(QDialog):
 
         self.sidebar = QListWidget()
         self.sidebar.setObjectName("Sidebar")
-        self.sidebar.setFixedWidth(150)
+        self.sidebar.setFixedWidth(176)
         self.sidebar.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.sidebar.setStyleSheet("""
-            QListWidget#Sidebar {
+            QListWidget#Sidebar {{
                 background: transparent;
                 border: none;
-                border-right: 1px solid rgba(128, 128, 128, 0.2);
+                border-right: 1px solid {border_color};
                 outline: none;
                 padding-top: 8px;
-            }
-            QListWidget#Sidebar::item {
+            }}
+            QListWidget#Sidebar::item {{
                 padding: 10px 14px;
-                margin: 2px 8px;
+                margin: 2px 10px;
                 border-radius: 6px;
                 font-size: 13px;
                 font-weight: 500;
-            }
-            QListWidget#Sidebar::item:selected {
-                background: rgba(59, 130, 246, 0.15);
-                color: #3b82f6;
-            }
-            QListWidget#Sidebar::item:hover:!selected {
-                background: rgba(128, 128, 128, 0.1);
-            }
-        """)
+                color: {muted_text};
+                border-left: 3px solid transparent;
+            }}
+            QListWidget#Sidebar::item:selected {{
+                background: {selected_bg};
+                color: {accent_color};
+                border-left: 3px solid {accent_color};
+                border-radius: 0px 6px 6px 0px;
+                padding-left: 11px;
+            }}
+            QListWidget#Sidebar::item:hover:!selected {{
+                background: {hover_bg};
+                color: {text_color};
+            }}
+        """.format(
+            border_color=border_color,
+            muted_text=muted_text,
+            accent_color=accent_color,
+            hover_bg=hover_bg,
+            selected_bg=selected_bg,
+            text_color=text_color
+        ))
         content_layout.addWidget(self.sidebar)
 
         self.stack = QStackedWidget()
@@ -621,8 +876,9 @@ class PDFExportDialog(QDialog):
         # --- Tab: Basic ---
         basic = QWidget()
         bl = QFormLayout(basic)
-        bl.setContentsMargins(24, 24, 24, 24)
-        bl.setSpacing(28)
+        bl.setContentsMargins(28, 22, 28, 22)
+        bl.setHorizontalSpacing(18)
+        bl.setVerticalSpacing(18)
         bl.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
         self.theme_radio = InlineRadioGroup(
@@ -702,8 +958,9 @@ class PDFExportDialog(QDialog):
         # --- Tab: Advanced ---
         adv = QWidget()
         avl = QFormLayout(adv)
-        avl.setContentsMargins(24, 24, 24, 24)
-        avl.setSpacing(28)
+        avl.setContentsMargins(28, 22, 28, 22)
+        avl.setHorizontalSpacing(18)
+        avl.setVerticalSpacing(16)
 
         def _spin(lo, hi, val, sfx):
             sp = NoScrollSpinBox()
@@ -763,12 +1020,13 @@ class PDFExportDialog(QDialog):
         fl.setContentsMargins(24, 24, 24, 24)
         fl.setSpacing(20)
         hint = QLabel(_t("fields_hint"))
-        hint.setStyleSheet("color:#64748b;font-size:11px;padding:0 4px 4px")
+        hint.setObjectName("HintLabel")
         hint.setWordWrap(True)
         fl.addWidget(hint)
         self.fields_scroll = QScrollArea()
         self.fields_scroll.setWidgetResizable(True)
         self.fields_container = QWidget()
+        self.fields_container.setObjectName("FieldsContainer")
         self.fields_layout = QVBoxLayout(self.fields_container)
         self.fields_layout.setContentsMargins(2, 2, 2, 2)
         self.fields_layout.setSpacing(1)
@@ -804,7 +1062,7 @@ class PDFExportDialog(QDialog):
         stl.addLayout(preset_row)
 
         self.settings_info = QLabel("")
-        self.settings_info.setStyleSheet("color:#64748b;font-size:12px")
+        self.settings_info.setObjectName("SettingsInfoLabel")
         self.settings_info.setWordWrap(True)
         self.settings_info.setVisible(False)
         stl.addWidget(self.settings_info)
@@ -845,11 +1103,43 @@ class PDFExportDialog(QDialog):
 
         # --- Bottom buttons ---
         bottom = QHBoxLayout()
-        bottom.setContentsMargins(20, 0, 20, 20)
+        bottom.setContentsMargins(12, 4, 12, 0)
         v_lbl = QLabel("v 1.2")
-        v_lbl.setStyleSheet("color:#71717a;font-size:11px;font-weight:600;")
+        v_lbl.setObjectName("VersionLabel")
         bottom.addWidget(v_lbl)
         bottom.addStretch()
+
+        self.busy_wrap = QWidget()
+        busy_ly = QHBoxLayout(self.busy_wrap)
+        busy_ly.setContentsMargins(0, 0, 10, 0)
+        busy_ly.setSpacing(8)
+        self.busy_bar = QProgressBar()
+        self.busy_bar.setObjectName("BusyBar")
+        busy_bar_bg = "#0f172a" if is_dark else "#f1f5f9"
+        busy_bar_border = "1px solid #334155" if is_dark else "1px solid #cbd5e1"
+        busy_bar_chunk = "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #3b82f6, stop:1 #60a5fa)" if is_dark else "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2563eb, stop:1 #3b82f6)"
+        self.busy_bar.setStyleSheet("""
+            QProgressBar#BusyBar {{
+                background: {busy_bar_bg};
+                border: {busy_bar_border};
+                border-radius: 4px;
+            }}
+            QProgressBar#BusyBar::chunk {{
+                background: {busy_bar_chunk};
+                border-radius: 3px;
+            }}
+        """.format(busy_bar_bg=busy_bar_bg, busy_bar_border=busy_bar_border, busy_bar_chunk=busy_bar_chunk))
+        self.busy_bar.setRange(0, 100)
+        self.busy_bar.setValue(0)
+        self.busy_bar.setFixedSize(92, 10)
+        self.busy_bar.setTextVisible(False)
+        busy_ly.addWidget(self.busy_bar)
+        self.busy_label = QLabel("")
+        self.busy_label.setObjectName("BusyLabel")
+        self.busy_label.setMinimumWidth(180)
+        busy_ly.addWidget(self.busy_label)
+        self.busy_wrap.setVisible(False)
+        bottom.addWidget(self.busy_wrap)
 
         self.grid_cb = QCheckBox(_t("cb_grid"))
         bottom.addWidget(self.grid_cb)
@@ -859,45 +1149,169 @@ class PDFExportDialog(QDialog):
             "QPushButton{{"
             "border:1px solid {brd};background:{bg};color:{fg};"
             "border-radius:6px;padding:7px 18px;font-size:13px;"
-            "font-weight:500;letter-spacing:0.01em}}"
-            "QPushButton:hover{{background:{hover}}}"
-            "QPushButton:pressed{{background:{pressed}}}"
+            "font-weight:600;letter-spacing:0.01em}}"
+            "QPushButton:hover{{background:{hover};border-color:{hover_brd}}}"
+            "QPushButton:pressed{{background:{pressed};border-color:{pressed_brd}}}"
             "QPushButton:disabled{{opacity:0.5}}"
         )
+
+        if is_dark:
+            legacy_style = _btn_base.format(
+                brd="#27272a", bg="transparent", fg="#e4e4e7",
+                hover="#202022", hover_brd="#27272a",
+                pressed="#18181b", pressed_brd="#27272a"
+            )
+            preview_style = _btn_base.format(
+                brd="#27272a", bg="transparent", fg="#e4e4e7",
+                hover="#202022", hover_brd="#27272a",
+                pressed="#18181b", pressed_brd="#27272a"
+            )
+            export_style = _btn_base.format(
+                brd="transparent", bg="qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2563eb, stop:1 #3b82f6)", fg="#ffffff",
+                hover="qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #3b82f6, stop:1 #60a5fa)", hover_brd="transparent",
+                pressed="qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #1d4ed8, stop:1 #2563eb)", pressed_brd="transparent"
+            )
+        else:
+            legacy_style = _btn_base.format(
+                brd="#e4e4e7", bg="transparent", fg="#18181b",
+                hover="#f4f4f5", hover_brd="#e4e4e7",
+                pressed="#e4e4e7", pressed_brd="#e4e4e7"
+            )
+            preview_style = _btn_base.format(
+                brd="#e4e4e7", bg="transparent", fg="#18181b",
+                hover="#f4f4f5", hover_brd="#e4e4e7",
+                pressed="#e4e4e7", pressed_brd="#e4e4e7"
+            )
+            export_style = _btn_base.format(
+                brd="transparent", bg="qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2563eb, stop:1 #3b82f6)", fg="#ffffff",
+                hover="qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #3b82f6, stop:1 #60a5fa)", hover_brd="transparent",
+                pressed="qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #1d4ed8, stop:1 #2563eb)", pressed_brd="transparent"
+            )
 
         self.legacy_btn = QPushButton(_t("btn_legacy"))
         self.legacy_btn.setMinimumHeight(34)
         self.legacy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.legacy_btn.setStyleSheet(_btn_base.format(
-            brd="#d0d5dd", bg="#ffffff", fg="#344054",
-            hover="#f9fafb", pressed="#f2f4f7"))
+        self.legacy_btn.setStyleSheet(legacy_style)
         self.legacy_btn.clicked.connect(self._on_legacy)
         bottom.addWidget(self.legacy_btn)
 
         self.preview_btn = QPushButton(_t("btn_preview"))
         self.preview_btn.setMinimumHeight(34)
         self.preview_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.preview_btn.setStyleSheet(_btn_base.format(
-            brd="#d0d5dd", bg="#ffffff", fg="#344054",
-            hover="#f9fafb", pressed="#f2f4f7"))
+        self.preview_btn.setStyleSheet(preview_style)
         self.preview_btn.clicked.connect(self._on_preview)
         bottom.addWidget(self.preview_btn)
 
         self.export_btn = QPushButton(_t("btn_export"))
         self.export_btn.setMinimumHeight(34)
         self.export_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.export_btn.setStyleSheet(_btn_base.format(
-            brd="#3b82f6", bg="#3b82f6", fg="#ffffff",
-            hover="#60a5fa", pressed="#2563eb"))
+        self.export_btn.setStyleSheet(export_style)
         self.export_btn.clicked.connect(self._on_export)
         bottom.addWidget(self.export_btn)
         root.addLayout(bottom)
         self.setLayout(root)
+        self._create_busy_overlay()
 
         self._populate_decks()
         self.deck_combo.currentIndexChanged.connect(self._on_deck_changed)
         self.subdeck_combo.currentIndexChanged.connect(self._on_subdeck_changed)
         self._try_autoload_settings()
+
+    def _create_busy_overlay(self):
+        is_dark = _is_dark_mode()
+        self.busy_overlay = QFrame(self)
+        self.busy_overlay.setObjectName("BusyOverlay")
+        self.busy_overlay.setCursor(Qt.CursorShape.WaitCursor)
+        overlay_bg = "rgba(16, 16, 16, 210)" if is_dark else "rgba(255, 255, 255, 210)"
+        panel_bg_overlay = "#18181b" if is_dark else "#ffffff"
+        border_overlay = "rgba(59, 130, 246, 0.4)" if is_dark else "rgba(37, 99, 235, 0.3)"
+        label_overlay = "#f4f4f5" if is_dark else "#18181b"
+        hint_overlay = "#a1a1aa" if is_dark else "#71717a"
+        bar_bg = "#101010" if is_dark else "#f4f4f5"
+        bar_border = "1px solid #27272a" if is_dark else "1px solid #e4e4e7"
+        bar_chunk = "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2563eb, stop:1 #3b82f6)" if is_dark else "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2563eb, stop:1 #3b82f6)"
+        self.busy_overlay.setStyleSheet("""
+            QFrame#BusyOverlay {{
+                background: {overlay_bg};
+                border: none;
+            }}
+            QFrame#BusyPanel {{
+                background: {panel_bg_overlay};
+                border: 1px solid {border_overlay};
+                border-radius: 12px;
+                min-width: 300px;
+            }}
+            QLabel#BusyOverlayLabel {{
+                color: {label_overlay};
+                font-size: 15px;
+                font-weight: 600;
+                font-family: system-ui, -apple-system, sans-serif;
+            }}
+            QLabel#BusyOverlayHint {{
+                color: {hint_overlay};
+                font-size: 11px;
+                font-weight: 500;
+                font-family: system-ui, -apple-system, sans-serif;
+            }}
+            QProgressBar#BusyOverlayBar {{
+                background: {bar_bg};
+                border: {bar_border};
+                border-radius: 5px;
+            }}
+            QProgressBar#BusyOverlayBar::chunk {{
+                background: {bar_chunk};
+                border-radius: 4px;
+            }}
+        """.format(
+            overlay_bg=overlay_bg,
+            panel_bg_overlay=panel_bg_overlay,
+            border_overlay=border_overlay,
+            label_overlay=label_overlay,
+            hint_overlay=hint_overlay,
+            bar_bg=bar_bg,
+            bar_border=bar_border,
+            bar_chunk=bar_chunk
+        ))
+        overlay_ly = QVBoxLayout(self.busy_overlay)
+        overlay_ly.setContentsMargins(0, 0, 0, 0)
+        overlay_ly.addStretch()
+
+        self.busy_panel = QFrame(self.busy_overlay)
+        self.busy_panel.setObjectName("BusyPanel")
+        panel_ly = QVBoxLayout(self.busy_panel)
+        panel_ly.setContentsMargins(28, 24, 28, 24)
+        panel_ly.setSpacing(12)
+
+        self.busy_overlay_label = QLabel("")
+        self.busy_overlay_label.setObjectName("BusyOverlayLabel")
+        self.busy_overlay_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        panel_ly.addWidget(self.busy_overlay_label)
+
+        self.busy_overlay_bar = QProgressBar()
+        self.busy_overlay_bar.setObjectName("BusyOverlayBar")
+        self.busy_overlay_bar.setRange(0, 100)
+        self.busy_overlay_bar.setValue(0)
+        self.busy_overlay_bar.setFixedSize(260, 10)
+        self.busy_overlay_bar.setTextVisible(False)
+        panel_ly.addWidget(self.busy_overlay_bar, 0, Qt.AlignmentFlag.AlignCenter)
+
+        hint = QLabel(_t("busy_hint"))
+        hint.setObjectName("BusyOverlayHint")
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        panel_ly.addWidget(hint)
+
+        overlay_ly.addWidget(self.busy_panel, 0, Qt.AlignmentFlag.AlignCenter)
+        overlay_ly.addStretch()
+        self.busy_overlay.setVisible(False)
+        self._position_busy_overlay()
+
+    def _position_busy_overlay(self):
+        if hasattr(self, "busy_overlay"):
+            self.busy_overlay.setGeometry(self.rect())
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._position_busy_overlay()
 
     # ------------------------------------------------------------------ slots
     def _on_width_radio_changed(self, idx, checked):
@@ -1243,6 +1657,63 @@ class PDFExportDialog(QDialog):
         self.legacy_btn.setEnabled(on)
         self.preview_btn.setEnabled(on)
         self.export_btn.setEnabled(on)
+        self.grid_cb.setEnabled(on)
+
+    def _animate_busy(self):
+        self._busy_val = (self._busy_val + 2) % 101
+        if hasattr(self, "busy_overlay_bar"):
+            self.busy_overlay_bar.setValue(self._busy_val)
+        if hasattr(self, "busy_bar"):
+            self.busy_bar.setValue(self._busy_val)
+        
+        self._spinner_idx = (self._spinner_idx + 1) % len(self._spinner_frames)
+        frame = self._spinner_frames[self._spinner_idx]
+        
+        msg = self._base_busy_message or ""
+        if hasattr(self, "busy_overlay_label"):
+            self.busy_overlay_label.setText("{}   {}".format(frame, msg))
+
+    def _set_busy_message(self, message):
+        self._base_busy_message = message
+        self.busy_label.setText(message)
+        self.busy_wrap.setVisible(True)
+        if hasattr(self, "busy_overlay"):
+            self.busy_overlay_label.setText(message)
+            self._position_busy_overlay()
+            self.busy_overlay.setVisible(True)
+            self.busy_overlay.raise_()
+        QApplication.processEvents()
+
+    def _begin_busy(self, message):
+        if self._busy_depth == 0:
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            self._busy_val = 0
+            self._spinner_idx = 0
+            if hasattr(self, "_busy_timer"):
+                self._busy_timer.start(80)
+        self._busy_depth += 1
+        self._set_btns(False)
+        self._set_busy_message(message)
+
+    def _end_busy(self, force=False):
+        if force:
+            self._busy_depth = 0
+        elif self._busy_depth > 0:
+            self._busy_depth -= 1
+        if self._busy_depth > 0:
+            return
+        if hasattr(self, "_busy_timer"):
+            self._busy_timer.stop()
+        self.busy_wrap.setVisible(False)
+        if hasattr(self, "busy_overlay"):
+            self.busy_overlay.setVisible(False)
+        self.busy_label.setText("")
+        self._set_btns(True)
+        try:
+            QApplication.restoreOverrideCursor()
+        except Exception:
+            pass
+        QApplication.processEvents()
 
     def _bring_to_front(self):
         QTimer.singleShot(300, lambda: (self.raise_(), self.activateWindow()))
@@ -1250,22 +1721,28 @@ class PDFExportDialog(QDialog):
     def _save_debug_artifacts(self, mode, card_ids, html_output):
         if not self.debug_cb.isChecked():
             return
-        desktop = os.path.expanduser("~/Desktop")
-        short = self._safe_filename(self._sel().split("::")[-1])
-        ts = datetime.datetime.now().strftime("%H%M%S")
-        html_path = os.path.join(desktop, "anki_debug_{}_{}.html".format(short, ts))
-        with open(html_path, "w", encoding="utf-8") as f:
-            f.write(html_output)
-        logger.save(os.path.join(desktop, "anki_pdf_log.txt"))
+        try:
+            desktop = os.path.expanduser("~/Desktop")
+            short = self._safe_filename(self._sel().split("::")[-1])
+            ts = datetime.datetime.now().strftime("%H%M%S")
+            html_path = os.path.join(desktop, "anki_debug_{}_{}.html".format(short, ts))
+            with open(html_path, "w", encoding="utf-8") as f:
+                f.write(html_output)
+            logger.save(os.path.join(desktop, "anki_pdf_log.txt"))
+        except Exception as e:
+            logger.log("Failed to save debug artifacts: {}".format(e))
 
     # ------------------------------------------------------------------ actions
     def _on_legacy(self):
         try:
+            self._begin_busy(_t("busy_legacy"))
             logger.start("Legacy")
             self._active_export_theme_index = self.theme_radio.currentIndex()
             logger.log("Theme: {} ({})".format(self._theme_name(), self._theme_index()))
             html, card_ids = self._build_html(mode="legacy")
-            _, p = tempfile.mkstemp(suffix=".html", text=True)
+            self._set_busy_message(_t("busy_opening"))
+            fd, p = tempfile.mkstemp(suffix=".html", text=True)
+            os.close(fd)
             with open(p, "w", encoding="utf-8") as f:
                 f.write(html)
             logger.finish()
@@ -1276,14 +1753,19 @@ class PDFExportDialog(QDialog):
             logger.error("Legacy", e)
             logger.finish()
             showWarning(str(e))
+        finally:
+            self._end_busy(force=True)
 
     def _on_preview(self):
         try:
+            self._begin_busy(_t("busy_preview"))
             logger.start("Preview")
             self._active_export_theme_index = self.theme_radio.currentIndex()
             logger.log("Theme: {} ({})".format(self._theme_name(), self._theme_index()))
             html, card_ids = self._build_html(mode="preview")
-            _, p = tempfile.mkstemp(suffix=".html", text=True)
+            self._set_busy_message(_t("busy_opening"))
+            fd, p = tempfile.mkstemp(suffix=".html", text=True)
+            os.close(fd)
             with open(p, "w", encoding="utf-8") as f:
                 f.write(html)
             logger.finish()
@@ -1294,6 +1776,8 @@ class PDFExportDialog(QDialog):
             logger.error("Preview", e)
             logger.finish()
             showWarning(str(e))
+        finally:
+            self._end_busy(force=True)
 
     def _on_export(self):
         dn = self._sel()
@@ -1304,14 +1788,15 @@ class PDFExportDialog(QDialog):
         if not sp:
             return
         logger.start("Export")
-        self._set_btns(False)
+        self._begin_busy(_t("busy_pdf_html"))
         self.export_btn.setText(_t("generating"))
         try:
             QApplication.processEvents()
             self._active_export_theme_index = self.theme_radio.currentIndex()
             logger.log("Theme: {} ({})".format(self._theme_name(), self._theme_index()))
             html, card_ids = self._build_html(mode="pdf")
-            _, self.temp_html_path = tempfile.mkstemp(suffix=".html", text=True)
+            fd, self.temp_html_path = tempfile.mkstemp(suffix=".html", text=True)
+            os.close(fd)
             with open(self.temp_html_path, "w", encoding="utf-8") as f:
                 f.write(html)
             self._save_debug_artifacts("pdf", card_ids, html)
@@ -1326,7 +1811,8 @@ class PDFExportDialog(QDialog):
     def _start_qt_pdf_export(self, path):
         logger.log("Generating Qt WebEngine fallback layout")
         html, _ = self._build_html(mode="pdf_fallback")
-        _, self.temp_fallback_path = tempfile.mkstemp(suffix=".html", text=True)
+        fd, self.temp_fallback_path = tempfile.mkstemp(suffix=".html", text=True)
+        os.close(fd)
         with open(self.temp_fallback_path, "w", encoding="utf-8") as f:
             f.write(html)
 
@@ -1379,6 +1865,7 @@ class PDFExportDialog(QDialog):
 
     def _start_external_export(self, path):
         self.export_btn.setText(_t("printing"))
+        self._set_busy_message(_t("busy_pdf_render"))
         self._external_export_result = None
         html_path = self.temp_html_path
         worker = threading.Thread(
@@ -1466,6 +1953,7 @@ class PDFExportDialog(QDialog):
 
     def _do_print(self, path):
         self.export_btn.setText(_t("printing"))
+        self._set_busy_message(_t("busy_pdf_render"))
         try:
             # Try PyQt6 first
             from PyQt6.QtCore import QMarginsF
@@ -1485,6 +1973,10 @@ class PDFExportDialog(QDialog):
                 QPageLayout.Unit.Millimeter,
             )
 
+            try:
+                self.page.pdfPrintingFinished.disconnect(self._printed)
+            except Exception:
+                pass
             self.page.pdfPrintingFinished.connect(self._printed)
             self.page.printToPdf(path, layout)
 
@@ -1495,12 +1987,12 @@ class PDFExportDialog(QDialog):
                 from PyQt5.QtGui import QPageLayout, QPageSize
 
                 ps_map = {
-                    "A4": QPageSize.PageSizeId.A4,
-                    "Letter": QPageSize.PageSizeId.Letter,
-                    "A3": QPageSize.PageSizeId.A3,
-                    "A5": QPageSize.PageSizeId.A5,
+                    "A4": QPageSize.A4,
+                    "Letter": QPageSize.Letter,
+                    "A3": QPageSize.A3,
+                    "A5": QPageSize.A5,
                 }
-                psid_val = ps_map.get(self.page_combo.currentText(), QPageSize.PageSizeId.A4)
+                psid_val = ps_map.get(self.page_combo.currentText(), QPageSize.A4)
 
                 size = QPageSize(psid_val)
                 layout = QPageLayout(
@@ -1510,10 +2002,18 @@ class PDFExportDialog(QDialog):
                     QPageLayout.Unit.Millimeter,
                 )
 
+                try:
+                    self.page.pdfPrintingFinished.disconnect(self._printed)
+                except Exception:
+                    pass
                 self.page.pdfPrintingFinished.connect(self._printed)
                 self.page.printToPdf(path, layout)
             except Exception:
                 # Minimal fallback - likely to have white margins but better than crash
+                try:
+                    self.page.pdfPrintingFinished.disconnect(self._printed)
+                except Exception:
+                    pass
                 if hasattr(self.page, 'pdfPrintingFinished'):
                     self.page.pdfPrintingFinished.connect(self._printed)
                 self.page.printToPdf(path)
@@ -1538,13 +2038,16 @@ class PDFExportDialog(QDialog):
             logger.save(os.path.join(os.path.dirname(__file__), "last_export_log.txt"))
         except Exception:
             pass
-        if self.debug_cb.isChecked():
-            logger.save(os.path.join(os.path.expanduser("~/Desktop"), "anki_pdf_log.txt"))
+        try:
+            if self.debug_cb.isChecked():
+                logger.save(os.path.join(os.path.expanduser("~/Desktop"), "anki_pdf_log.txt"))
+        except Exception as e:
+            logger.log("Failed to save debug log: {}".format(e))
 
     def _reset(self):
         self.export_btn.setText(_t("btn_export"))
-        self._set_btns(True)
         self._active_export_theme_index = None
+        self._end_busy(force=True)
 
     def _collect_fc(self):
         fc = {}
@@ -1585,29 +2088,29 @@ class PDFExportDialog(QDialog):
         }
 
     def _apply_settings(self, s):
-        self.theme_radio.setCurrentIndex(s.get("theme", 0))
-        self.font_combo.setCurrentIndex(s.get("font", 0))
-        self.fontsize_spin.setValue(s.get("font_size", 13))
-        self.width_radio.setCurrentIndex(s.get("width", 1))
-        self.width_spin.setValue(s.get("custom_width", 800))
-        self.layout_radio.setCurrentIndex(s.get("layout", 1))
-        self.render_radio.setCurrentIndex(s.get("render", 0))
-        self.show_title_cb.setChecked(s.get("show_title", True))
-        self.card_numbers_cb.setChecked(s.get("card_numbers", False))
-        self.zebra_cb.setChecked(s.get("zebra", False))
-        self.page_combo.setCurrentIndex(s.get("page", 0))
-        self.margin_spin.setValue(s.get("margins", 15))
-        self.top_margin_spin.setValue(s.get("top_margin", 15))
-        self.padding_spin.setValue(s.get("padding", 12))
-        self.gap_spin.setValue(s.get("min_gap", 4))
-        self.lh_spin.setValue(s.get("line_height", 1.40))
-        self.img_h_spin.setValue(s.get("max_img", 240))
-        self.strip_html_cb.setChecked(s.get("strip_html", False))
-        self.card_style_combo.setCurrentIndex(s.get("card_style", 0))
-        self.grid_cb.setChecked(s.get("grid", False))
-        self.lang_radio.setCurrentIndex(0 if s.get("language", "en") == "en" else 1)
-        self.debug_cb.setChecked(s.get("debug", False))
-        self.high_contrast_cb.setChecked(s.get("high_contrast", False))
+        self.theme_radio.setCurrentIndex(s.get("theme", DEFAULT_SETTINGS["theme"]))
+        self.font_combo.setCurrentIndex(s.get("font", DEFAULT_SETTINGS["font"]))
+        self.fontsize_spin.setValue(s.get("font_size", DEFAULT_SETTINGS["font_size"]))
+        self.width_radio.setCurrentIndex(s.get("width", DEFAULT_SETTINGS["width"]))
+        self.width_spin.setValue(s.get("custom_width", DEFAULT_SETTINGS["custom_width"]))
+        self.layout_radio.setCurrentIndex(s.get("layout", DEFAULT_SETTINGS["layout"]))
+        self.render_radio.setCurrentIndex(s.get("render", DEFAULT_SETTINGS["render"]))
+        self.show_title_cb.setChecked(s.get("show_title", DEFAULT_SETTINGS["show_title"]))
+        self.card_numbers_cb.setChecked(s.get("card_numbers", DEFAULT_SETTINGS["card_numbers"]))
+        self.zebra_cb.setChecked(s.get("zebra", DEFAULT_SETTINGS["zebra"]))
+        self.page_combo.setCurrentIndex(s.get("page", DEFAULT_SETTINGS["page"]))
+        self.margin_spin.setValue(s.get("margins", DEFAULT_SETTINGS["margins"]))
+        self.top_margin_spin.setValue(s.get("top_margin", DEFAULT_SETTINGS["top_margin"]))
+        self.padding_spin.setValue(s.get("padding", DEFAULT_SETTINGS["padding"]))
+        self.gap_spin.setValue(s.get("min_gap", DEFAULT_SETTINGS["min_gap"]))
+        self.lh_spin.setValue(s.get("line_height", DEFAULT_SETTINGS["line_height"]))
+        self.img_h_spin.setValue(s.get("max_img", DEFAULT_SETTINGS["max_img"]))
+        self.strip_html_cb.setChecked(s.get("strip_html", DEFAULT_SETTINGS["strip_html"]))
+        self.card_style_combo.setCurrentIndex(s.get("card_style", DEFAULT_SETTINGS["card_style"]))
+        self.grid_cb.setChecked(s.get("grid", DEFAULT_SETTINGS["grid"]))
+        self.lang_radio.setCurrentIndex(0 if s.get("language", DEFAULT_SETTINGS["language"]) == "en" else 1)
+        self.debug_cb.setChecked(s.get("debug", DEFAULT_SETTINGS["debug"]))
+        self.high_contrast_cb.setChecked(s.get("high_contrast", DEFAULT_SETTINGS["high_contrast"]))
 
     def _save_settings(self):
         try:
@@ -1910,6 +2413,7 @@ class PDFExportDialog(QDialog):
                 "#lbx-img{{width:auto;height:auto;"
                 "max-width:none!important;max-height:none!important;"
                 "cursor:grab;user-select:none;-webkit-user-drag:none;"
+                "touch-action:none;"
                 "will-change:transform;border-radius:3px;"
                 "transition:transform .1s cubic-bezier(.25,.46,.45,.94)}}"
                 "#lbx-img.dragging{{cursor:grabbing;transition:none}}"
@@ -1997,6 +2501,7 @@ class PDFExportDialog(QDialog):
 
         def b64(fn):
             clean = urllib.parse.unquote(fn)
+            clean = clean.split('?')[0].split('#')[0]
             p = os.path.join(media_dir, clean)
             if not os.path.exists(p):
                 img_fail[0] += 1
@@ -2015,8 +2520,8 @@ class PDFExportDialog(QDialog):
             d = b64(m.group(2))
             return "src={}{}{}".format(m.group(1), d, m.group(1)) if d else m.group(0)
 
-        img_re = re.compile(r'src=(["\'])(?!http|data:)([^"\']+)\1')
-        xlink_re = re.compile(r'xlink:href=(["\'])(?!http|data:)([^"\']+)\1')
+        img_re = re.compile(r'src=(["\'])(?!http|data:)([^"\']+)\1', re.IGNORECASE)
+        xlink_re = re.compile(r'xlink:href=(["\'])(?!http|data:)([^"\']+)\1', re.IGNORECASE)
 
         def fix_xlink(m):
             d = b64(m.group(2))
@@ -2059,8 +2564,8 @@ class PDFExportDialog(QDialog):
             if not raw:
                 return raw
             raw, svgs = _protect_svg(raw)
-            raw = re.sub(r"<style[^>]*>.*?</style>", "", raw, flags=re.DOTALL)
-            raw = re.sub(r"<script[^>]*>.*?</script>", "", raw, flags=re.DOTALL)
+            raw = re.sub(r"<style[^>]*>.*?</style>", "", raw, flags=re.DOTALL | re.IGNORECASE)
+            raw = re.sub(r"<script[^>]*>.*?</script>", "", raw, flags=re.DOTALL | re.IGNORECASE)
             raw = re.sub(r"<meta[^>]*>", "", raw, flags=re.IGNORECASE)
             raw = re.sub(r"<title[^>]*>.*?</title>", "", raw, flags=re.DOTALL | re.IGNORECASE)
             raw = re.sub(r"<h1[^>]*>(.*?)</h1>", r"<p><strong>\1</strong></p>",
@@ -2131,8 +2636,8 @@ class PDFExportDialog(QDialog):
 
         def clean_rendered(raw_html):
             raw_html, svgs = _protect_svg(raw_html)
-            c = re.sub(r"<style[^>]*>.*?</style>", "", raw_html, flags=re.DOTALL)
-            c = re.sub(r"<script[^>]*>.*?</script>", "", c, flags=re.DOTALL)
+            c = re.sub(r"<style[^>]*>.*?</style>", "", raw_html, flags=re.DOTALL | re.IGNORECASE)
+            c = re.sub(r"<script[^>]*>.*?</script>", "", c, flags=re.DOTALL | re.IGNORECASE)
             c = sanitise_html(c.strip())
             return _restore_svg(c, svgs)
 
@@ -2286,7 +2791,10 @@ class PDFExportDialog(QDialog):
                     nt = note.note_type()
                     fmap = {}
                     for fm in nt["flds"]:
-                        fmap[fm["name"]] = proc_raw(note.fields[fm["ord"]].strip())
+                        val = ""
+                        if fm["ord"] < len(note.fields):
+                            val = note.fields[fm["ord"]].strip()
+                        fmap[fm["name"]] = proc_raw(val)
                     sq, sa, sx = [], [], []
                     for w in self.field_widgets:
                         fn = w.field_name
@@ -2394,6 +2902,7 @@ class PDFExportDialog(QDialog):
                 "cb=document.getElementById('lbx-close'),"
                 "pc=document.querySelector('.page-content');"
                 "var sc=1,ox=0,oy=0,drag=false,sx=0,sy=0,fitScale=1;"
+                "var lastClick=0,lastClickX=0,lastClickY=0,ignoreNativeDbl=false,suppressClickUntil=0,openTimer=0;"
                 "function applyT(){"
                 "li.style.transform='translate('+ox+'px,'+oy+'px) scale('+sc+')';"
                 "}"
@@ -2406,17 +2915,37 @@ class PDFExportDialog(QDialog):
                 "li.classList.remove('no-anim');"
                 "applyT();"
                 "}"
-                "function openImg(src){"
+                "function toggleZoomAt(cx,cy){"
+                "if(Math.abs(sc-fitScale)<0.01){"
+                "var rect=lbx.getBoundingClientRect();"
+                "var mx=cx-rect.width/2-ox;"
+                "var my=cy-rect.height/2-oy;"
+                "var ds=1/sc;"
+                "ox-=mx*(ds-1);oy-=my*(ds-1);sc=1;"
+                "}else{sc=fitScale;ox=0;oy=0;}"
+                "li.classList.remove('no-anim');applyT();"
+                "}"
+                "function isQuickRepeat(cx,cy){"
+                "var now=Date.now();"
+                "var dx=cx-lastClickX,dy=cy-lastClickY;"
+                "var hit=lastClick&&now-lastClick<330&&(dx*dx+dy*dy)<64;"
+                "lastClick=now;lastClickX=cx;lastClickY=cy;"
+                "return hit;"
+                "}"
+                "function openImg(src,full,cx,cy){"
+                "if(openTimer){clearTimeout(openTimer);openTimer=0;}"
                 "sc=1;ox=0;oy=0;"
+                "lastClick=0;ignoreNativeDbl=false;suppressClickUntil=0;"
                 "li.classList.add('no-anim');"
                 "li.style.transform='';"
-                "li.onload=function(){fitToView();};"
+                "li.onload=function(){fitToView();if(full)toggleZoomAt(cx||window.innerWidth/2,cy||window.innerHeight/2);};"
                 "li.src=src;"
                 "lbx.classList.add('open');"
                 "document.body.style.overflow='hidden';"
-                "if(li.complete&&li.naturalWidth)fitToView();"
+                "if(li.complete&&li.naturalWidth){fitToView();if(full)toggleZoomAt(cx||window.innerWidth/2,cy||window.innerHeight/2);}"
                 "}"
                 "function closeViewer(){"
+                "if(openTimer){clearTimeout(openTimer);openTimer=0;}"
                 "lbx.classList.remove('open');"
                 "li.src='';"
                 "document.body.style.overflow='';"
@@ -2424,7 +2953,18 @@ class PDFExportDialog(QDialog):
                 "if(pc)pc.addEventListener('click',function(e){"
                 "var t=e.target;"
                 "while(t&&t!==pc){"
-                "if(t.tagName==='IMG'){openImg(t.src);return;}"
+                "if(t.tagName==='IMG'){"
+                "var src=t.src,cx=e.clientX,cy=e.clientY;"
+                "if(openTimer)clearTimeout(openTimer);"
+                "openTimer=setTimeout(function(){openImg(src,false,cx,cy);},180);return;}"
+                "t=t.parentNode;}"
+                "});"
+                "if(pc)pc.addEventListener('dblclick',function(e){"
+                "var t=e.target;"
+                "while(t&&t!==pc){"
+                "if(t.tagName==='IMG'){e.preventDefault();e.stopPropagation();"
+                "if(openTimer){clearTimeout(openTimer);openTimer=0;}"
+                "openImg(t.src,true,e.clientX,e.clientY);return;}"
                 "t=t.parentNode;}"
                 "});"
                 "cb.addEventListener('click',closeViewer);"
@@ -2458,16 +2998,28 @@ class PDFExportDialog(QDialog):
                 "document.addEventListener('mouseup',function(){"
                 "if(drag){drag=false;li.classList.remove('dragging');}"
                 "});"
-                "li.addEventListener('dblclick',function(e){"
+                "li.addEventListener('click',function(e){"
                 "e.stopPropagation();"
-                "if(Math.abs(sc-fitScale)<0.01){"
-                "var rect=lbx.getBoundingClientRect();"
-                "var mx=e.clientX-rect.width/2-ox;"
-                "var my=e.clientY-rect.height/2-oy;"
-                "var ds=1/sc;"
-                "ox-=mx*(ds-1);oy-=my*(ds-1);sc=1;"
-                "}else{sc=fitScale;ox=0;oy=0;}"
-                "li.classList.remove('no-anim');applyT();"
+                "if(Date.now()<suppressClickUntil)return;"
+                "if(isQuickRepeat(e.clientX,e.clientY)){"
+                "ignoreNativeDbl=true;lastClick=0;"
+                "toggleZoomAt(e.clientX,e.clientY);"
+                "}"
+                "});"
+                "li.addEventListener('dblclick',function(e){"
+                "e.preventDefault();"
+                "e.stopPropagation();"
+                "if(ignoreNativeDbl){ignoreNativeDbl=false;return;}"
+                "lastClick=0;toggleZoomAt(e.clientX,e.clientY);"
+                "});"
+                "li.addEventListener('touchend',function(e){"
+                "if(e.changedTouches.length!==1)return;"
+                "var t=e.changedTouches[0];"
+                "suppressClickUntil=Date.now()+450;"
+                "if(isQuickRepeat(t.clientX,t.clientY)){"
+                "e.preventDefault();lastClick=0;"
+                "toggleZoomAt(t.clientX,t.clientY);"
+                "}"
                 "});"
                 "})();</script>"
             )
@@ -2490,11 +3042,6 @@ def show_export_dialog():
     _dlg.activateWindow()
 
 
-action = QAction(_t("menu_action"), mw)
-action.triggered.connect(show_export_dialog)
-mw.form.menuTools.addAction(action)
-
-
 def _quick_legacy_export():
     """Open the currently focused deck as Legacy HTML (Shift+P shortcut)."""
     if not mw.col:
@@ -2515,6 +3062,15 @@ def _quick_legacy_export():
     _dlg._on_legacy()
 
 
-_legacy_shortcut = QShortcut(QKeySequence("Shift+P"), mw)
-_legacy_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
-_legacy_shortcut.activated.connect(_quick_legacy_export)
+_dev_menu = QMenu(_t("menu_root"), mw)
+mw.form.menuTools.addMenu(_dev_menu)
+
+action = QAction(_t("menu_action"), mw)
+action.triggered.connect(show_export_dialog)
+_dev_menu.addAction(action)
+
+_quick_legacy_action = QAction(_t("menu_quick_legacy"), mw)
+_quick_legacy_action.setShortcut(QKeySequence("Shift+P"))
+_quick_legacy_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+_quick_legacy_action.triggered.connect(_quick_legacy_export)
+_dev_menu.addAction(_quick_legacy_action)
