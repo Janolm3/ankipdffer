@@ -25,7 +25,7 @@ except ImportError:
 _STRINGS = {
     "en": {
         "window_title": "Anki → PDF",
-        "menu_root": "AnkiPdffer Dev (Main)",
+        "menu_root": "AnkiPdffer",
         "menu_action": "Open export dialog...",
         "menu_quick_legacy": "Quick Legacy HTML (current deck)",
         "deck_group": "Deck",
@@ -128,7 +128,7 @@ _STRINGS = {
     },
     "pl": {
         "window_title": "Anki → PDF",
-        "menu_root": "AnkiPdffer Dev (Main)",
+        "menu_root": "AnkiPdffer",
         "menu_action": "Otwórz okno eksportu...",
         "menu_quick_legacy": "Szybki Legacy HTML (bieżący deck)",
         "deck_group": "Deck",
@@ -1104,7 +1104,16 @@ class PDFExportDialog(QDialog):
         # --- Bottom buttons ---
         bottom = QHBoxLayout()
         bottom.setContentsMargins(12, 4, 12, 0)
-        v_lbl = QLabel("v 1.2")
+        addon_version = "1.3.1"
+        try:
+            addon_dir = os.path.dirname(__file__)
+            manifest_path = os.path.join(addon_dir, "manifest.json")
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+                addon_version = manifest.get("human_version", "1.3.1")
+        except Exception:
+            pass
+        v_lbl = QLabel(f"v {addon_version}")
         v_lbl.setObjectName("VersionLabel")
         bottom.addWidget(v_lbl)
         bottom.addStretch()
@@ -3070,7 +3079,7 @@ action.triggered.connect(show_export_dialog)
 _dev_menu.addAction(action)
 
 _quick_legacy_action = QAction(_t("menu_quick_legacy"), mw)
-_quick_legacy_action.setShortcut(QKeySequence("Shift+P"))
+_quick_legacy_action.setShortcut(QKeySequence("Shift+Alt+P"))
 _quick_legacy_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
 _quick_legacy_action.triggered.connect(_quick_legacy_export)
 _dev_menu.addAction(_quick_legacy_action)

@@ -2,6 +2,12 @@
 
 All notable changes to the **AnkiPdffer Dev** add-on will be documented in this file.
 
+## [1.3.1] - 2026-05-19
+
+### Fixed
+- **Menu Label**: Fixed the root menu name to be simply `"AnkiPdffer"` instead of `"AnkiPdffer Dev (Branch)"` for correct production display.
+- **Dynamic Version Indicator**: Replaced the hardcoded `"v 1.2"` string in the dialog window footer with a dynamic loader that reads directly from `manifest.json`.
+
 ## [1.3.0] - 2026-05-19
 
 ### Added
