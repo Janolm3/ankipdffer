@@ -1,0 +1,9 @@
+[09:53:43.512] == Export START ==
+[09:53:43.528] Theme: Dark (1)
+[09:53:43.528] Kart: 47
+[09:53:43.535] OK: 47, skip: 0
+[09:53:43.536] Img OK: 6, fail: 0
+[09:53:44.549] WeasyPrint python: /opt/homebrew/opt/python@3.14/bin/python3.14
+[09:53:44.550] PDF engine: WeasyPrint
+[09:53:44.550] PDF: 282161 B
+[09:53:44.550] == DONE (1.04s) ==
