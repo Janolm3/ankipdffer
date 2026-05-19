@@ -1154,6 +1154,7 @@ class PDFExportDialog(QDialog):
         self._try_autoload_settings()
 
     def _create_busy_overlay(self):
+        is_dark = _is_dark_mode()
         self.busy_overlay = QFrame(self)
         self.busy_overlay.setObjectName("BusyOverlay")
         self.busy_overlay.setCursor(Qt.CursorShape.WaitCursor)
