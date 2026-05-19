@@ -1,22 +1,22 @@
 # AnkiPdffer
 
-Export Anki decks to clean PDFs or standalone interactive HTML files.
+Export Anki decks to polished PDFs or standalone interactive HTML files.
 
-AnkiPdffer turns flashcards into readable documents for printing, offline study, sharing, and archiving.
+AnkiPdffer turns flashcards into clean, readable documents for printing, offline study, sharing, and archiving.
 
 [GitHub](https://github.com/Janolm3/ankipdffer)
 
 ---
 
-## Features
+## Highlights
 
-- **PDF export** — print-ready PDFs with A4, A5, A3, Letter, custom sizes, margins, padding, and live preview.
-- **Standalone HTML** — one offline HTML file with embedded images.
-- **Themes** — Light, Dark, and Pro.
-- **Typography** — 12 fonts, adjustable text size, and line height.
-- **Layouts** — compact mode, grid view, custom widths, borders, spacing, and padding.
-- **Subdeck picker** — browse nested decks in a clean tree view.
-- **Progress loader** — animated export overlay with progress updates.
+- **Print-ready PDF export** with A4, A5, A3, Letter, custom sizes, margins, padding, and live preview.
+- **Standalone HTML export** as a single offline file with embedded images.
+- **Native Anki rendering** for Cloze, Image Occlusion, SVG masks, custom CSS, and complex templates.
+- **Interactive image viewer** with zoom, pan, fullscreen preview, and keyboard support.
+- **Clean customization** for themes, typography, spacing, borders, and layout density.
+- **Subdeck tree picker** for browsing nested decks without digging through long lists.
+- **No external dependencies** — runs directly inside Anki.
 
 ---
 
@@ -24,7 +24,7 @@ AnkiPdffer turns flashcards into readable documents for printing, offline study,
 
 ### Fields Mode
 
-Best for simple, clean study sheets.
+Best for simple, uniform study sheets.
 
 Map Anki fields to:
 
@@ -32,13 +32,55 @@ Map Anki fields to:
 - Back
 - Extra
 
-Customize each field with colors, alignment, labels, and text styling.
+Customize each field with labels, colors, alignment, and text styling.
+
+> [!NOTE]
+> Use **Fields Mode** when you want clean, consistent documents rather than exact Anki card rendering.
 
 ### Cards Mode
 
 Best for Cloze, Image Occlusion, and complex templates.
 
-Renders cards using Anki’s native templates and preserves CSS, SVG masks, cloze styling, and custom layouts.
+Cards Mode renders cards using Anki’s native templates, preserving:
+
+- Cloze deletions
+- Image Occlusion masks
+- SVG overlays
+- Custom CSS
+- Advanced card layouts
+
+> [!TIP]
+> Use **Cards Mode** for Image Occlusion cards to preserve SVG masks and occluded shapes.
+
+---
+
+## Export Options
+
+### PDF
+
+Create polished, print-ready documents with:
+
+- Standard or custom page sizes
+- Adjustable margins
+- Card spacing and padding
+- Compact layout options
+- Live PDF preview before export
+
+> [!TIP]
+> Use **PDF Preview** before exporting to check natural page breaks and avoid awkward card splits.
+
+### Standalone HTML
+
+Generate a single portable HTML file with:
+
+- Embedded images
+- Offline access
+- Interactive image viewing
+- Optional grid layout
+- Easy sharing across devices
+
+> [!NOTE]
+> Standalone HTML files work offline and keep images embedded, making them easy to share or archive.
 
 ---
 
@@ -50,7 +92,7 @@ In Anki, open:
 Tools → Export Deck to PDF…
 ````
 
-Then choose your deck, layout, theme, and export format.
+Then choose your deck, render mode, layout, theme, and export format.
 
 Quick export current deck to Legacy HTML:
 
@@ -60,7 +102,7 @@ Shift + P
 
 ---
 
-## HTML Image Viewer
+## Image Viewer
 
 Click any image in the exported HTML to open it fullscreen.
 
@@ -73,9 +115,11 @@ Click any image in the exported HTML to open it fullscreen.
 
 ## Tips
 
-* Use **Cards Mode** for Image Occlusion.
-* Use **Grid Mode** for dense review sheets.
-* Use **Compact Layout + No Border** to save paper.
+> [!TIP]
+> For dense review sheets, enable **Grid Mode** and use **Compact Layout + No Border**.
+
+> [!TIP]
+> For paper-saving exports, reduce spacing and switch to a compact card layout.
 
 ---
 
@@ -88,6 +132,6 @@ Click any image in the exported HTML to open it fullscreen.
 
 ## Source & License
 
-Open source under the MIT License.
+AnkiPdffer is open source under the MIT License.
 
 [github.com/Janolm3/ankipdffer](https://github.com/Janolm3/ankipdffer)
