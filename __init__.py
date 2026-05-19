@@ -596,10 +596,10 @@ class PDFExportDialog(QDialog):
             border_color = "#27272a"
             text_color = "#f4f4f5"
             muted_text = "#a1a1aa"
-            accent_color = "#8b5cf6"
-            accent_hover = "#a78bfa"
+            accent_color = "#3b82f6"
+            accent_hover = "#60a5fa"
             hover_bg = "#27272a"
-            selected_bg = "rgba(139, 92, 246, 0.15)"
+            selected_bg = "rgba(59, 130, 246, 0.15)"
         else:
             bg_color = "#fcfcfc"
             card_bg = "#f4f4f5"
@@ -607,10 +607,10 @@ class PDFExportDialog(QDialog):
             border_color = "#e4e4e7"
             text_color = "#18181b"
             muted_text = "#71717a"
-            accent_color = "#6366f1"
-            accent_hover = "#4f46e5"
+            accent_color = "#2563eb"
+            accent_hover = "#3b82f6"
             hover_bg = "#e4e4e7"
-            selected_bg = "rgba(99, 102, 241, 0.12)"
+            selected_bg = "rgba(37, 99, 235, 0.12)"
 
         dialog_css = """
             PDFExportDialog, QStackedWidget, QStackedWidget > QWidget {{
@@ -727,7 +727,7 @@ class PDFExportDialog(QDialog):
             QCheckBox::indicator:checked {{
                 border-color: {accent_color};
                 background-color: {accent_color};
-                image: qradialgradient(cx:0.5, cy:0.5, radius:0.3, fx:0.5, fy:0.5, stop:0 #ffffff, stop:0.7 #ffffff, stop:0.8 transparent);
+                background-image: qradialgradient(cx:0.5, cy:0.5, radius:0.25, fx:0.5, fy:0.5, stop:0 #ffffff, stop:0.7 #ffffff, stop:0.8 {accent_color}, stop:1.0 {accent_color});
             }}
             QRadioButton {{
                 spacing: 6px;
@@ -751,7 +751,7 @@ class PDFExportDialog(QDialog):
             QRadioButton::indicator:checked {{
                 border-color: {accent_color};
                 background-color: {panel_bg};
-                image: qradialgradient(cx:0.5, cy:0.5, radius:0.4, fx:0.5, fy:0.5, stop:0 {accent_color}, stop:0.6 {accent_color}, stop:0.7 transparent);
+                background-image: qradialgradient(cx:0.5, cy:0.5, radius:0.35, fx:0.5, fy:0.5, stop:0 {accent_color}, stop:0.7 {accent_color}, stop:0.8 {panel_bg}, stop:1.0 {panel_bg});
             }}
             QScrollBar:vertical {{
                 background: transparent;
@@ -1163,9 +1163,9 @@ class PDFExportDialog(QDialog):
                 pressed="#18181b", pressed_brd="#27272a"
             )
             export_style = _btn_base.format(
-                brd="transparent", bg="qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #8b5cf6, stop:1 #6366f1)", fg="#ffffff",
-                hover="qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #a78bfa, stop:1 #818cf8)", hover_brd="transparent",
-                pressed="qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #7c3aed, stop:1 #4f46e5)", pressed_brd="transparent"
+                brd="transparent", bg="qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2563eb, stop:1 #3b82f6)", fg="#ffffff",
+                hover="qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #3b82f6, stop:1 #60a5fa)", hover_brd="transparent",
+                pressed="qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #1d4ed8, stop:1 #2563eb)", pressed_brd="transparent"
             )
         else:
             legacy_style = _btn_base.format(
@@ -1179,9 +1179,9 @@ class PDFExportDialog(QDialog):
                 pressed="#e4e4e7", pressed_brd="#e4e4e7"
             )
             export_style = _btn_base.format(
-                brd="transparent", bg="qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #6366f1, stop:1 #4f46e5)", fg="#ffffff",
-                hover="qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #818cf8, stop:1 #6366f1)", hover_brd="transparent",
-                pressed="qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4f46e5, stop:1 #3730a3)", pressed_brd="transparent"
+                brd="transparent", bg="qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2563eb, stop:1 #3b82f6)", fg="#ffffff",
+                hover="qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #3b82f6, stop:1 #60a5fa)", hover_brd="transparent",
+                pressed="qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #1d4ed8, stop:1 #2563eb)", pressed_brd="transparent"
             )
 
         self.legacy_btn = QPushButton(_t("btn_legacy"))
@@ -1220,12 +1220,12 @@ class PDFExportDialog(QDialog):
         self.busy_overlay.setCursor(Qt.CursorShape.WaitCursor)
         overlay_bg = "rgba(16, 16, 16, 210)" if is_dark else "rgba(255, 255, 255, 210)"
         panel_bg_overlay = "#18181b" if is_dark else "#ffffff"
-        border_overlay = "rgba(139, 92, 246, 0.4)" if is_dark else "rgba(99, 102, 241, 0.3)"
+        border_overlay = "rgba(59, 130, 246, 0.4)" if is_dark else "rgba(37, 99, 235, 0.3)"
         label_overlay = "#f4f4f5" if is_dark else "#18181b"
         hint_overlay = "#a1a1aa" if is_dark else "#71717a"
         bar_bg = "#101010" if is_dark else "#f4f4f5"
         bar_border = "1px solid #27272a" if is_dark else "1px solid #e4e4e7"
-        bar_chunk = "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #8b5cf6, stop:1 #6366f1)" if is_dark else "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #6366f1, stop:1 #4f46e5)"
+        bar_chunk = "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2563eb, stop:1 #3b82f6)" if is_dark else "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2563eb, stop:1 #3b82f6)"
         self.busy_overlay.setStyleSheet("""
             QFrame#BusyOverlay {{
                 background: {overlay_bg};
