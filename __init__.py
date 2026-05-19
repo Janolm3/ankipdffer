@@ -590,28 +590,50 @@ class PDFExportDialog(QDialog):
 
         is_dark = _is_dark_mode()
         if is_dark:
-            bg_color = "#1e293b"      # Slate 800
-            panel_bg = "#0f172a"      # Slate 900
-            border_color = "#334155"  # Slate 700
-            text_color = "#f1f5f9"    # Slate 100
-            muted_text = "#94a3b8"    # Slate 400
-            accent_color = "#3b82f6"  # Blue 500
-            hover_bg = "#334155"
+            bg_color = "#101010"
+            card_bg = "#18181b"
+            panel_bg = "#202022"
+            border_color = "#27272a"
+            text_color = "#f4f4f5"
+            muted_text = "#a1a1aa"
+            accent_color = "#8b5cf6"
+            accent_hover = "#a78bfa"
+            hover_bg = "#27272a"
+            selected_bg = "rgba(139, 92, 246, 0.15)"
         else:
-            bg_color = "#ffffff"
-            panel_bg = "#f8fafc"      # Slate 50
-            border_color = "#e2e8f0"  # Slate 200
-            text_color = "#0f172a"    # Slate 900
-            muted_text = "#64748b"    # Slate 500
-            accent_color = "#2563eb"  # Blue 600
-            hover_bg = "#f1f5f9"      # Slate 100
+            bg_color = "#fcfcfc"
+            card_bg = "#f4f4f5"
+            panel_bg = "#ffffff"
+            border_color = "#e4e4e7"
+            text_color = "#18181b"
+            muted_text = "#71717a"
+            accent_color = "#6366f1"
+            accent_hover = "#4f46e5"
+            hover_bg = "#e4e4e7"
+            selected_bg = "rgba(99, 102, 241, 0.12)"
 
         dialog_css = """
-            PDFExportDialog, QStackedWidget, QStackedWidget > QWidget, QScrollArea, QScrollArea > QWidget {{
+            PDFExportDialog, QStackedWidget, QStackedWidget > QWidget {{
                 background-color: {bg_color};
                 color: {text_color};
             }}
-            QLabel, QCheckBox, QRadioButton, QGroupBox, FieldConfigWidget {{
+            QScrollArea {{
+                border: none;
+                background-color: transparent;
+            }}
+            QScrollArea > QWidget {{
+                background-color: transparent;
+            }}
+            QWidget#FieldsContainer {{
+                background-color: transparent;
+            }}
+            FieldConfigWidget {{
+                background-color: {card_bg};
+                border-bottom: 1px solid {border_color};
+                border-radius: 4px;
+                padding: 6px;
+            }}
+            QLabel, QCheckBox, QRadioButton, QGroupBox {{
                 background-color: transparent;
                 color: {text_color};
             }}
@@ -639,24 +661,25 @@ class PDFExportDialog(QDialog):
             }}
             QGroupBox {{
                 font-size: 13px;
-                font-weight: 600;
+                font-weight: 700;
                 color: {text_color};
-                border: 1px solid {border_color};
-                border-radius: 8px;
-                margin-top: 10px;
+                border: none;
+                border-top: 1px solid {border_color};
+                margin-top: 18px;
                 padding-top: 16px;
             }}
             QGroupBox::title {{
                 subcontrol-origin: margin;
                 subcontrol-position: top left;
-                left: 12px;
-                padding: 0 4px;
+                left: 0px;
+                padding: 0 8px 0 0;
+                color: {accent_color};
             }}
             QComboBox, QSpinBox, QDoubleSpinBox, NoScrollComboBox, QLineEdit, QPlainTextEdit {{
                 background-color: {panel_bg};
                 border: 1px solid {border_color};
                 border-radius: 6px;
-                padding: 5px 10px;
+                padding: 6px 10px;
                 color: {text_color};
                 font-size: 13px;
                 min-height: 20px;
@@ -678,12 +701,13 @@ class PDFExportDialog(QDialog):
                 margin-right: 8px;
             }}
             QComboBox QAbstractItemView {{
-                background-color: {bg_color};
+                background-color: {card_bg};
                 border: 1px solid {border_color};
                 selection-background-color: {accent_color};
                 selection-color: #ffffff;
                 color: {text_color};
                 outline: none;
+                border-radius: 6px;
             }}
             QCheckBox {{
                 spacing: 8px;
@@ -729,8 +753,30 @@ class PDFExportDialog(QDialog):
                 background-color: {panel_bg};
                 image: qradialgradient(cx:0.5, cy:0.5, radius:0.4, fx:0.5, fy:0.5, stop:0 {accent_color}, stop:0.6 {accent_color}, stop:0.7 transparent);
             }}
+            QScrollBar:vertical {{
+                background: transparent;
+                width: 6px;
+                margin: 0px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {border_color};
+                min-height: 20px;
+                border-radius: 3px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {accent_color};
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                background: none;
+                border: none;
+                height: 0px;
+            }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+                background: none;
+            }}
         """.format(
             bg_color=bg_color,
+            card_bg=card_bg,
             panel_bg=panel_bg,
             border_color=border_color,
             text_color=text_color,
@@ -801,19 +847,26 @@ class PDFExportDialog(QDialog):
                 font-size: 13px;
                 font-weight: 500;
                 color: {muted_text};
+                border-left: 3px solid transparent;
             }}
             QListWidget#Sidebar::item:selected {{
-                background: rgba(59, 130, 246, 0.15);
+                background: {selected_bg};
                 color: {accent_color};
+                border-left: 3px solid {accent_color};
+                border-radius: 0px 6px 6px 0px;
+                padding-left: 11px;
             }}
             QListWidget#Sidebar::item:hover:!selected {{
                 background: {hover_bg};
+                color: {text_color};
             }}
         """.format(
             border_color=border_color,
             muted_text=muted_text,
             accent_color=accent_color,
-            hover_bg=hover_bg
+            hover_bg=hover_bg,
+            selected_bg=selected_bg,
+            text_color=text_color
         ))
         content_layout.addWidget(self.sidebar)
 
@@ -973,6 +1026,7 @@ class PDFExportDialog(QDialog):
         self.fields_scroll = QScrollArea()
         self.fields_scroll.setWidgetResizable(True)
         self.fields_container = QWidget()
+        self.fields_container.setObjectName("FieldsContainer")
         self.fields_layout = QVBoxLayout(self.fields_container)
         self.fields_layout.setContentsMargins(2, 2, 2, 2)
         self.fields_layout.setSpacing(1)
@@ -1091,37 +1145,43 @@ class PDFExportDialog(QDialog):
             "QPushButton{{"
             "border:1px solid {brd};background:{bg};color:{fg};"
             "border-radius:6px;padding:7px 18px;font-size:13px;"
-            "font-weight:500;letter-spacing:0.01em}}"
-            "QPushButton:hover{{background:{hover}}}"
-            "QPushButton:pressed{{background:{pressed}}}"
+            "font-weight:600;letter-spacing:0.01em}}"
+            "QPushButton:hover{{background:{hover};border-color:{hover_brd}}}"
+            "QPushButton:pressed{{background:{pressed};border-color:{pressed_brd}}}"
             "QPushButton:disabled{{opacity:0.5}}"
         )
 
         if is_dark:
             legacy_style = _btn_base.format(
-                brd="#475569", bg="#334155", fg="#f1f5f9",
-                hover="#475569", pressed="#1e293b"
+                brd="#27272a", bg="transparent", fg="#e4e4e7",
+                hover="#202022", hover_brd="#27272a",
+                pressed="#18181b", pressed_brd="#27272a"
             )
             preview_style = _btn_base.format(
-                brd="#475569", bg="#334155", fg="#f1f5f9",
-                hover="#475569", pressed="#1e293b"
+                brd="#27272a", bg="transparent", fg="#e4e4e7",
+                hover="#202022", hover_brd="#27272a",
+                pressed="#18181b", pressed_brd="#27272a"
             )
             export_style = _btn_base.format(
-                brd="#2563eb", bg="#2563eb", fg="#ffffff",
-                hover="#3b82f6", pressed="#1d4ed8"
+                brd="transparent", bg="qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #8b5cf6, stop:1 #6366f1)", fg="#ffffff",
+                hover="qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #a78bfa, stop:1 #818cf8)", hover_brd="transparent",
+                pressed="qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #7c3aed, stop:1 #4f46e5)", pressed_brd="transparent"
             )
         else:
             legacy_style = _btn_base.format(
-                brd="#d0d5dd", bg="#ffffff", fg="#344054",
-                hover="#f9fafb", pressed="#f2f4f7"
+                brd="#e4e4e7", bg="transparent", fg="#18181b",
+                hover="#f4f4f5", hover_brd="#e4e4e7",
+                pressed="#e4e4e7", pressed_brd="#e4e4e7"
             )
             preview_style = _btn_base.format(
-                brd="#d0d5dd", bg="#ffffff", fg="#344054",
-                hover="#f9fafb", pressed="#f2f4f7"
+                brd="#e4e4e7", bg="transparent", fg="#18181b",
+                hover="#f4f4f5", hover_brd="#e4e4e7",
+                pressed="#e4e4e7", pressed_brd="#e4e4e7"
             )
             export_style = _btn_base.format(
-                brd="#3b82f6", bg="#3b82f6", fg="#ffffff",
-                hover="#60a5fa", pressed="#2563eb"
+                brd="transparent", bg="qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #6366f1, stop:1 #4f46e5)", fg="#ffffff",
+                hover="qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #818cf8, stop:1 #6366f1)", hover_brd="transparent",
+                pressed="qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4f46e5, stop:1 #3730a3)", pressed_brd="transparent"
             )
 
         self.legacy_btn = QPushButton(_t("btn_legacy"))
@@ -1158,14 +1218,14 @@ class PDFExportDialog(QDialog):
         self.busy_overlay = QFrame(self)
         self.busy_overlay.setObjectName("BusyOverlay")
         self.busy_overlay.setCursor(Qt.CursorShape.WaitCursor)
-        overlay_bg = "rgba(15, 23, 42, 210)" if is_dark else "rgba(255, 255, 255, 210)"
-        panel_bg_overlay = "#1e293b" if is_dark else "#ffffff"
-        border_overlay = "rgba(59, 130, 246, 0.4)" if is_dark else "rgba(37, 99, 235, 0.3)"
-        label_overlay = "#f1f5f9" if is_dark else "#0f172a"
-        hint_overlay = "#94a3b8" if is_dark else "#64748b"
-        bar_bg = "#0f172a" if is_dark else "#f1f5f9"
-        bar_border = "1px solid #334155" if is_dark else "1px solid #cbd5e1"
-        bar_chunk = "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #3b82f6, stop:1 #60a5fa)" if is_dark else "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2563eb, stop:1 #3b82f6)"
+        overlay_bg = "rgba(16, 16, 16, 210)" if is_dark else "rgba(255, 255, 255, 210)"
+        panel_bg_overlay = "#18181b" if is_dark else "#ffffff"
+        border_overlay = "rgba(139, 92, 246, 0.4)" if is_dark else "rgba(99, 102, 241, 0.3)"
+        label_overlay = "#f4f4f5" if is_dark else "#18181b"
+        hint_overlay = "#a1a1aa" if is_dark else "#71717a"
+        bar_bg = "#101010" if is_dark else "#f4f4f5"
+        bar_border = "1px solid #27272a" if is_dark else "1px solid #e4e4e7"
+        bar_chunk = "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #8b5cf6, stop:1 #6366f1)" if is_dark else "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #6366f1, stop:1 #4f46e5)"
         self.busy_overlay.setStyleSheet("""
             QFrame#BusyOverlay {{
                 background: {overlay_bg};
