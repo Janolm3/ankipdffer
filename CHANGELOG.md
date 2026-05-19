@@ -2,6 +2,11 @@
 
 All notable changes to the **AnkiPdffer Dev** add-on will be documented in this file.
 
+## [1.3.2] - 2026-05-19
+
+### Changed
+- **Package Size Optimization**: Pruned unneeded `.c` source files, unused `pyphen` language dictionaries (keeping only English and Polish), and `.dist-info` pip metadata. This reduces the final `.ankiaddon` package size from **11.2 MB** down to **8.3 MB** (~25% file size reduction).
+
 ## [1.3.1] - 2026-05-19
 
 ### Fixed
