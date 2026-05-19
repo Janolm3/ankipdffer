@@ -16,11 +16,18 @@ mkdir -p "${DIST_DIR}"
 
 # Build the zip — Anki expects __init__.py + manifest.json at the root of the zip
 cd "${ADDON_DIR}"
+
+echo "==> Pruning unneeded files from .vendor/ to reduce package size"
+find .vendor -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+find .vendor -type d -name "*.dist-info" -exec rm -rf {} + 2>/dev/null || true
+find .vendor -type f -name "*.c" -delete 2>/dev/null || true
+find .vendor/pyphen/dictionaries -type f ! -name "*en*" ! -name "*pl*" ! -name "*README*" -delete 2>/dev/null || true
+
 zip -r "${DIST_DIR}/${ZIP_NAME}" \
     __init__.py \
     manifest.json \
     .vendor/ \
-    -x "*.pyc" -x "__pycache__/*" -x "*.DS_Store" -x "settings.json" -x "dist/*"
+    -x "*.pyc" -x "*/__pycache__/*" -x "*.DS_Store" -x "settings.json" -x "dist/*"
 
 echo "==> Created ${DIST_DIR}/${ZIP_NAME}"
 
