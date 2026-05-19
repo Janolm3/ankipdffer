@@ -1396,13 +1396,16 @@ class PDFExportDialog(QDialog):
     def _save_debug_artifacts(self, mode, card_ids, html_output):
         if not self.debug_cb.isChecked():
             return
-        desktop = os.path.expanduser("~/Desktop")
-        short = self._safe_filename(self._sel().split("::")[-1])
-        ts = datetime.datetime.now().strftime("%H%M%S")
-        html_path = os.path.join(desktop, "anki_debug_{}_{}.html".format(short, ts))
-        with open(html_path, "w", encoding="utf-8") as f:
-            f.write(html_output)
-        logger.save(os.path.join(desktop, "anki_pdf_log.txt"))
+        try:
+            desktop = os.path.expanduser("~/Desktop")
+            short = self._safe_filename(self._sel().split("::")[-1])
+            ts = datetime.datetime.now().strftime("%H%M%S")
+            html_path = os.path.join(desktop, "anki_debug_{}_{}.html".format(short, ts))
+            with open(html_path, "w", encoding="utf-8") as f:
+                f.write(html_output)
+            logger.save(os.path.join(desktop, "anki_pdf_log.txt"))
+        except Exception as e:
+            logger.log("Failed to save debug artifacts: {}".format(e))
 
     # ------------------------------------------------------------------ actions
     def _on_legacy(self):
@@ -1413,7 +1416,8 @@ class PDFExportDialog(QDialog):
             logger.log("Theme: {} ({})".format(self._theme_name(), self._theme_index()))
             html, card_ids = self._build_html(mode="legacy")
             self._set_busy_message(_t("busy_opening"))
-            _, p = tempfile.mkstemp(suffix=".html", text=True)
+            fd, p = tempfile.mkstemp(suffix=".html", text=True)
+            os.close(fd)
             with open(p, "w", encoding="utf-8") as f:
                 f.write(html)
             logger.finish()
@@ -1435,7 +1439,8 @@ class PDFExportDialog(QDialog):
             logger.log("Theme: {} ({})".format(self._theme_name(), self._theme_index()))
             html, card_ids = self._build_html(mode="preview")
             self._set_busy_message(_t("busy_opening"))
-            _, p = tempfile.mkstemp(suffix=".html", text=True)
+            fd, p = tempfile.mkstemp(suffix=".html", text=True)
+            os.close(fd)
             with open(p, "w", encoding="utf-8") as f:
                 f.write(html)
             logger.finish()
@@ -1465,7 +1470,8 @@ class PDFExportDialog(QDialog):
             self._active_export_theme_index = self.theme_radio.currentIndex()
             logger.log("Theme: {} ({})".format(self._theme_name(), self._theme_index()))
             html, card_ids = self._build_html(mode="pdf")
-            _, self.temp_html_path = tempfile.mkstemp(suffix=".html", text=True)
+            fd, self.temp_html_path = tempfile.mkstemp(suffix=".html", text=True)
+            os.close(fd)
             with open(self.temp_html_path, "w", encoding="utf-8") as f:
                 f.write(html)
             self._save_debug_artifacts("pdf", card_ids, html)
@@ -1480,7 +1486,8 @@ class PDFExportDialog(QDialog):
     def _start_qt_pdf_export(self, path):
         logger.log("Generating Qt WebEngine fallback layout")
         html, _ = self._build_html(mode="pdf_fallback")
-        _, self.temp_fallback_path = tempfile.mkstemp(suffix=".html", text=True)
+        fd, self.temp_fallback_path = tempfile.mkstemp(suffix=".html", text=True)
+        os.close(fd)
         with open(self.temp_fallback_path, "w", encoding="utf-8") as f:
             f.write(html)
 
@@ -1641,6 +1648,10 @@ class PDFExportDialog(QDialog):
                 QPageLayout.Unit.Millimeter,
             )
 
+            try:
+                self.page.pdfPrintingFinished.disconnect(self._printed)
+            except Exception:
+                pass
             self.page.pdfPrintingFinished.connect(self._printed)
             self.page.printToPdf(path, layout)
 
@@ -1651,12 +1662,12 @@ class PDFExportDialog(QDialog):
                 from PyQt5.QtGui import QPageLayout, QPageSize
 
                 ps_map = {
-                    "A4": QPageSize.PageSizeId.A4,
-                    "Letter": QPageSize.PageSizeId.Letter,
-                    "A3": QPageSize.PageSizeId.A3,
-                    "A5": QPageSize.PageSizeId.A5,
+                    "A4": QPageSize.A4,
+                    "Letter": QPageSize.Letter,
+                    "A3": QPageSize.A3,
+                    "A5": QPageSize.A5,
                 }
-                psid_val = ps_map.get(self.page_combo.currentText(), QPageSize.PageSizeId.A4)
+                psid_val = ps_map.get(self.page_combo.currentText(), QPageSize.A4)
 
                 size = QPageSize(psid_val)
                 layout = QPageLayout(
@@ -1666,10 +1677,18 @@ class PDFExportDialog(QDialog):
                     QPageLayout.Unit.Millimeter,
                 )
 
+                try:
+                    self.page.pdfPrintingFinished.disconnect(self._printed)
+                except Exception:
+                    pass
                 self.page.pdfPrintingFinished.connect(self._printed)
                 self.page.printToPdf(path, layout)
             except Exception:
                 # Minimal fallback - likely to have white margins but better than crash
+                try:
+                    self.page.pdfPrintingFinished.disconnect(self._printed)
+                except Exception:
+                    pass
                 if hasattr(self.page, 'pdfPrintingFinished'):
                     self.page.pdfPrintingFinished.connect(self._printed)
                 self.page.printToPdf(path)
@@ -1694,8 +1713,11 @@ class PDFExportDialog(QDialog):
             logger.save(os.path.join(os.path.dirname(__file__), "last_export_log.txt"))
         except Exception:
             pass
-        if self.debug_cb.isChecked():
-            logger.save(os.path.join(os.path.expanduser("~/Desktop"), "anki_pdf_log.txt"))
+        try:
+            if self.debug_cb.isChecked():
+                logger.save(os.path.join(os.path.expanduser("~/Desktop"), "anki_pdf_log.txt"))
+        except Exception as e:
+            logger.log("Failed to save debug log: {}".format(e))
 
     def _reset(self):
         self.export_btn.setText(_t("btn_export"))
@@ -1741,29 +1763,29 @@ class PDFExportDialog(QDialog):
         }
 
     def _apply_settings(self, s):
-        self.theme_radio.setCurrentIndex(s.get("theme", 0))
-        self.font_combo.setCurrentIndex(s.get("font", 0))
-        self.fontsize_spin.setValue(s.get("font_size", 13))
-        self.width_radio.setCurrentIndex(s.get("width", 1))
-        self.width_spin.setValue(s.get("custom_width", 800))
-        self.layout_radio.setCurrentIndex(s.get("layout", 1))
-        self.render_radio.setCurrentIndex(s.get("render", 0))
-        self.show_title_cb.setChecked(s.get("show_title", True))
-        self.card_numbers_cb.setChecked(s.get("card_numbers", False))
-        self.zebra_cb.setChecked(s.get("zebra", False))
-        self.page_combo.setCurrentIndex(s.get("page", 0))
-        self.margin_spin.setValue(s.get("margins", 15))
-        self.top_margin_spin.setValue(s.get("top_margin", 15))
-        self.padding_spin.setValue(s.get("padding", 12))
-        self.gap_spin.setValue(s.get("min_gap", 4))
-        self.lh_spin.setValue(s.get("line_height", 1.40))
-        self.img_h_spin.setValue(s.get("max_img", 240))
-        self.strip_html_cb.setChecked(s.get("strip_html", False))
-        self.card_style_combo.setCurrentIndex(s.get("card_style", 0))
-        self.grid_cb.setChecked(s.get("grid", False))
-        self.lang_radio.setCurrentIndex(0 if s.get("language", "en") == "en" else 1)
-        self.debug_cb.setChecked(s.get("debug", False))
-        self.high_contrast_cb.setChecked(s.get("high_contrast", False))
+        self.theme_radio.setCurrentIndex(s.get("theme", DEFAULT_SETTINGS["theme"]))
+        self.font_combo.setCurrentIndex(s.get("font", DEFAULT_SETTINGS["font"]))
+        self.fontsize_spin.setValue(s.get("font_size", DEFAULT_SETTINGS["font_size"]))
+        self.width_radio.setCurrentIndex(s.get("width", DEFAULT_SETTINGS["width"]))
+        self.width_spin.setValue(s.get("custom_width", DEFAULT_SETTINGS["custom_width"]))
+        self.layout_radio.setCurrentIndex(s.get("layout", DEFAULT_SETTINGS["layout"]))
+        self.render_radio.setCurrentIndex(s.get("render", DEFAULT_SETTINGS["render"]))
+        self.show_title_cb.setChecked(s.get("show_title", DEFAULT_SETTINGS["show_title"]))
+        self.card_numbers_cb.setChecked(s.get("card_numbers", DEFAULT_SETTINGS["card_numbers"]))
+        self.zebra_cb.setChecked(s.get("zebra", DEFAULT_SETTINGS["zebra"]))
+        self.page_combo.setCurrentIndex(s.get("page", DEFAULT_SETTINGS["page"]))
+        self.margin_spin.setValue(s.get("margins", DEFAULT_SETTINGS["margins"]))
+        self.top_margin_spin.setValue(s.get("top_margin", DEFAULT_SETTINGS["top_margin"]))
+        self.padding_spin.setValue(s.get("padding", DEFAULT_SETTINGS["padding"]))
+        self.gap_spin.setValue(s.get("min_gap", DEFAULT_SETTINGS["min_gap"]))
+        self.lh_spin.setValue(s.get("line_height", DEFAULT_SETTINGS["line_height"]))
+        self.img_h_spin.setValue(s.get("max_img", DEFAULT_SETTINGS["max_img"]))
+        self.strip_html_cb.setChecked(s.get("strip_html", DEFAULT_SETTINGS["strip_html"]))
+        self.card_style_combo.setCurrentIndex(s.get("card_style", DEFAULT_SETTINGS["card_style"]))
+        self.grid_cb.setChecked(s.get("grid", DEFAULT_SETTINGS["grid"]))
+        self.lang_radio.setCurrentIndex(0 if s.get("language", DEFAULT_SETTINGS["language"]) == "en" else 1)
+        self.debug_cb.setChecked(s.get("debug", DEFAULT_SETTINGS["debug"]))
+        self.high_contrast_cb.setChecked(s.get("high_contrast", DEFAULT_SETTINGS["high_contrast"]))
 
     def _save_settings(self):
         try:
@@ -2154,6 +2176,7 @@ class PDFExportDialog(QDialog):
 
         def b64(fn):
             clean = urllib.parse.unquote(fn)
+            clean = clean.split('?')[0].split('#')[0]
             p = os.path.join(media_dir, clean)
             if not os.path.exists(p):
                 img_fail[0] += 1
@@ -2172,8 +2195,8 @@ class PDFExportDialog(QDialog):
             d = b64(m.group(2))
             return "src={}{}{}".format(m.group(1), d, m.group(1)) if d else m.group(0)
 
-        img_re = re.compile(r'src=(["\'])(?!http|data:)([^"\']+)\1')
-        xlink_re = re.compile(r'xlink:href=(["\'])(?!http|data:)([^"\']+)\1')
+        img_re = re.compile(r'src=(["\'])(?!http|data:)([^"\']+)\1', re.IGNORECASE)
+        xlink_re = re.compile(r'xlink:href=(["\'])(?!http|data:)([^"\']+)\1', re.IGNORECASE)
 
         def fix_xlink(m):
             d = b64(m.group(2))
@@ -2216,8 +2239,8 @@ class PDFExportDialog(QDialog):
             if not raw:
                 return raw
             raw, svgs = _protect_svg(raw)
-            raw = re.sub(r"<style[^>]*>.*?</style>", "", raw, flags=re.DOTALL)
-            raw = re.sub(r"<script[^>]*>.*?</script>", "", raw, flags=re.DOTALL)
+            raw = re.sub(r"<style[^>]*>.*?</style>", "", raw, flags=re.DOTALL | re.IGNORECASE)
+            raw = re.sub(r"<script[^>]*>.*?</script>", "", raw, flags=re.DOTALL | re.IGNORECASE)
             raw = re.sub(r"<meta[^>]*>", "", raw, flags=re.IGNORECASE)
             raw = re.sub(r"<title[^>]*>.*?</title>", "", raw, flags=re.DOTALL | re.IGNORECASE)
             raw = re.sub(r"<h1[^>]*>(.*?)</h1>", r"<p><strong>\1</strong></p>",
@@ -2288,8 +2311,8 @@ class PDFExportDialog(QDialog):
 
         def clean_rendered(raw_html):
             raw_html, svgs = _protect_svg(raw_html)
-            c = re.sub(r"<style[^>]*>.*?</style>", "", raw_html, flags=re.DOTALL)
-            c = re.sub(r"<script[^>]*>.*?</script>", "", c, flags=re.DOTALL)
+            c = re.sub(r"<style[^>]*>.*?</style>", "", raw_html, flags=re.DOTALL | re.IGNORECASE)
+            c = re.sub(r"<script[^>]*>.*?</script>", "", c, flags=re.DOTALL | re.IGNORECASE)
             c = sanitise_html(c.strip())
             return _restore_svg(c, svgs)
 
@@ -2443,7 +2466,10 @@ class PDFExportDialog(QDialog):
                     nt = note.note_type()
                     fmap = {}
                     for fm in nt["flds"]:
-                        fmap[fm["name"]] = proc_raw(note.fields[fm["ord"]].strip())
+                        val = ""
+                        if fm["ord"] < len(note.fields):
+                            val = note.fields[fm["ord"]].strip()
+                        fmap[fm["name"]] = proc_raw(val)
                     sq, sa, sx = [], [], []
                     for w in self.field_widgets:
                         fn = w.field_name
