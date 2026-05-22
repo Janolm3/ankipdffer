@@ -9,6 +9,8 @@ import datetime
 import json
 import uuid
 import shutil
+import shlex
+import html as html_module
 import subprocess
 import sys
 import threading
@@ -113,7 +115,7 @@ _STRINGS = {
         "msg_settings_load_err": "Load error: {}",
         "msg_settings_reset": "Settings reset to defaults.",
         "msg_error": "Error.",
-        "msg_pdf_saved": "PDF saved:\n{}",
+        "msg_pdf_saved": "PDF saved to:\n{}",
         "msg_log_saved": "Saved: {}",
         "logs_title": "Logs",
         "btn_copy": "Copy",
@@ -217,7 +219,7 @@ _STRINGS = {
         "msg_settings_load_err": "Błąd wczytywania ustawień: {}",
         "msg_settings_reset": "Przywrócono ustawienia domyślne.",
         "msg_error": "Błąd.",
-        "msg_pdf_saved": "PDF zapisano:\n{}",
+        "msg_pdf_saved": "PDF zapisano w:\n{}",
         "msg_log_saved": "Zapisano: {}",
         "logs_title": "Logi",
         "btn_copy": "Kopiuj",
@@ -348,6 +350,7 @@ class ExportLogger:
 
 
 logger = ExportLogger()
+EXPORT_BUILD = "deck-path-header-20260522"
 
 
 class CustomWebEnginePage(QWebEnginePage):
@@ -1475,6 +1478,37 @@ class PDFExportDialog(QDialog):
     def _vendor_dir():
         return os.path.join(os.path.dirname(__file__), ".vendor")
 
+    @staticmethod
+    def _isolated_python_env():
+        env = os.environ.copy()
+        for key in ("PYTHONHOME", "PYTHONPATH"):
+            env.pop(key, None)
+        env["PYTHONNOUSERSITE"] = "1"
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        return env
+
+    @staticmethod
+    def _python_command(candidate):
+        if not candidate:
+            return None
+        try:
+            parts = shlex.split(candidate)
+        except ValueError:
+            parts = [candidate]
+        if not parts:
+            return None
+        if os.path.basename(parts[0]) == "env" and len(parts) > 1:
+            resolved = shutil.which(parts[1])
+            if not resolved:
+                return None
+            return [resolved] + parts[2:]
+        if not os.path.exists(parts[0]):
+            resolved = shutil.which(parts[0])
+            if not resolved:
+                return None
+            parts[0] = resolved
+        return parts
+
     def _find_weasy_python(self, logs):
         cached = getattr(self, "_weasy_python_cache", None)
         if cached and os.path.exists(cached):
@@ -1510,21 +1544,25 @@ class PDFExportDialog(QDialog):
             "print(sys.executable)\n"
         )
         for candidate in candidates:
-            if not candidate or not os.path.exists(candidate):
+            if not candidate:
+                continue
+            command = self._python_command(candidate)
+            if not command:
                 continue
             try:
                 result = subprocess.run(
-                    [candidate, "-c", probe, vendor_dir],
+                    command + ["-I", "-B", "-c", probe, vendor_dir],
                     capture_output=True,
                     text=True,
                     timeout=10,
+                    env=self._isolated_python_env(),
                 )
             except Exception as e:
                 logs.append("Weasy probe error [{}]: {}".format(candidate, e))
                 continue
 
             if result.returncode == 0:
-                resolved = candidate
+                resolved = command[0]
                 if result.stdout.strip():
                     resolved = result.stdout.strip().splitlines()[-1].strip() or candidate
                 self._weasy_python_cache = resolved if os.path.exists(resolved) else candidate
@@ -1747,6 +1785,7 @@ class PDFExportDialog(QDialog):
             self._begin_busy(_t("busy_legacy"))
             logger.start("Legacy")
             self._active_export_theme_index = self.theme_radio.currentIndex()
+            logger.log("Build: {}".format(EXPORT_BUILD))
             logger.log("Theme: {} ({})".format(self._theme_name(), self._theme_index()))
             html, card_ids = self._build_html(mode="legacy")
             self._set_busy_message(_t("busy_opening"))
@@ -1770,6 +1809,7 @@ class PDFExportDialog(QDialog):
             self._begin_busy(_t("busy_preview"))
             logger.start("Preview")
             self._active_export_theme_index = self.theme_radio.currentIndex()
+            logger.log("Build: {}".format(EXPORT_BUILD))
             logger.log("Theme: {} ({})".format(self._theme_name(), self._theme_index()))
             html, card_ids = self._build_html(mode="preview")
             self._set_busy_message(_t("busy_opening"))
@@ -1802,6 +1842,7 @@ class PDFExportDialog(QDialog):
         try:
             QApplication.processEvents()
             self._active_export_theme_index = self.theme_radio.currentIndex()
+            logger.log("Build: {}".format(EXPORT_BUILD))
             logger.log("Theme: {} ({})".format(self._theme_name(), self._theme_index()))
             html, card_ids = self._build_html(mode="pdf")
             fd, self.temp_html_path = tempfile.mkstemp(suffix=".html", text=True)
@@ -1935,11 +1976,16 @@ class PDFExportDialog(QDialog):
         try:
             if os.path.exists(path):
                 os.remove(path)
+            command = self._python_command(python_bin)
+            if not command:
+                logs.append("WeasyPrint export error: invalid python [{}]".format(python_bin))
+                return False
             result = subprocess.run(
-                [python_bin, "-c", script, vendor_dir, html_path, path],
+                command + ["-I", "-B", "-c", script, vendor_dir, html_path, path],
                 capture_output=True,
                 text=True,
                 timeout=120,
+                env=self._isolated_python_env(),
             )
             if result.returncode != 0:
                 logs.append("WeasyPrint exit: {}".format(result.returncode))
@@ -2028,6 +2074,7 @@ class PDFExportDialog(QDialog):
                 self.page.printToPdf(path)
     def _printed(self, path, success):
         if success and os.path.exists(path):
+            logger.log("PDF path: {}".format(path))
             logger.log("PDF: {} B".format(os.path.getsize(path)))
         logger.finish()
         self._save_debug_log()
@@ -2220,7 +2267,9 @@ class PDFExportDialog(QDialog):
         al_map = ["left", "center", "justify", "right"]
 
         display_title = deck_name.split("::")[-1] if "::" in deck_name else deck_name
+        deck_path = deck_name.replace("::", " > ")
         label_sz = max(8, bsz - 4)
+        title_gap = 4
 
         if card_max_w > 0:
             content_max_w_css = ".page-content{{max-width:{mw}px;margin:0 auto}}".format(mw=card_max_w)
@@ -2228,20 +2277,20 @@ class PDFExportDialog(QDialog):
             content_max_w_css = ""
 
         sanitise_css = (
-            ".fv [style*='background']{{background:transparent!important}}"
-            ".fv [style*='Background']{{background:transparent!important}}"
-            ".fv [bgcolor]{{background:transparent!important}}"
-            ".fv .nightMode,.fv .night_mode,.fv .nightmode{{all:unset!important}}"
-            ".fv [style*='color:white']{{color:inherit!important}}"
-            ".fv [style*='color:#fff']{{color:inherit!important}}"
-            ".fv [style*='color: white']{{color:inherit!important}}"
-            ".fv [style*='width'][style*='height']{{max-width:100%!important;height:auto!important}}"
-            ".fv style{{display:none!important}}"
-            ".rs [style*='background']{{background:transparent!important}}"
-            ".rs [bgcolor]{{background:transparent!important}}"
-            ".rs .nightMode,.rs .night_mode,.rs .nightmode{{all:unset!important}}"
-            ".rs [style*='color:white']{{color:inherit!important}}"
-            ".rs [style*='color:#fff']{{color:inherit!important}}"
+            ".fv [style*='background']{background:transparent!important}"
+            ".fv [style*='Background']{background:transparent!important}"
+            ".fv [bgcolor]{background:transparent!important}"
+            ".fv .nightMode,.fv .night_mode,.fv .nightmode{all:unset!important}"
+            ".fv [style*='color:white']{color:inherit!important}"
+            ".fv [style*='color:#fff']{color:inherit!important}"
+            ".fv [style*='color: white']{color:inherit!important}"
+            ".fv [style*='width'][style*='height']{max-width:100%!important;height:auto!important}"
+            ".fv style{display:none!important}"
+            ".rs [style*='background']{background:transparent!important}"
+            ".rs [bgcolor]{background:transparent!important}"
+            ".rs .nightMode,.rs .night_mode,.rs .nightmode{all:unset!important}"
+            ".rs [style*='color:white']{color:inherit!important}"
+            ".rs [style*='color:#fff']{color:inherit!important}"
         )
 
         io_css_str = (
@@ -2289,11 +2338,14 @@ class PDFExportDialog(QDialog):
             "word-wrap:break-word;overflow-wrap:break-word;"
             "-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}}"
             "h1.doc-title{{text-align:center;font-size:{h1sz}px;font-weight:800;"
-            "color:{acc};margin:12px 0 2px;padding-top:8px;letter-spacing:-.03em}}"
+            "color:{acc};margin:12px 0 {titlegap}px;padding-top:8px;letter-spacing:-.03em}}"
             ".sub{{text-align:center;color:{mut};font-size:{subsz}px;"
             "font-weight:500;margin:0 0 {subgap}px;letter-spacing:-.01em}}"
             ".card{{{card_extra}background:{card};margin-bottom:{gap}px!important;"
             "break-inside:avoid;page-break-inside:avoid;overflow:hidden;display:block;width:100%}}"
+            ".card.long-card{{break-inside:auto;page-break-inside:auto;overflow:visible}}"
+            ".card.long-card .sec-q,.card.long-card .sec-a,.card.long-card .sec-x{{"
+            "break-inside:auto;page-break-inside:auto;overflow:visible}}"
             ".cnum{{font-size:9px;font-weight:700;color:{mut};"
             "text-transform:uppercase;letter-spacing:.1em;padding:6px {padx}px 2px}}"
             ".sec-q,.sec-a,.sec-x{{overflow:hidden}}"
@@ -2332,7 +2384,8 @@ class PDFExportDialog(QDialog):
             "{hc_css}"
         ).format(
             font=font, txt=t["txt"], bsz=bsz, lh=lh,
-            h1sz=bsz + 6, acc=t["acc"], mut=t["mut"], subsz=bsz - 2, subgap=min_gap + 2,
+            h1sz=bsz + 6, acc=t["acc"], mut=t["mut"], titlegap=title_gap,
+            subsz=bsz - 2, subgap=min_gap + 2,
             card_extra=card_extra, card=t["card"], gap=css_gap,
             pad=pad, padh=padh, padx=pad + 2,
             div=t["div"], flsz=label_sz, brd=t["brd"], img_h=img_h,
@@ -2495,12 +2548,14 @@ class PDFExportDialog(QDialog):
             html.append('<div class="page"><div class="page-content">')
         else:
             html.append('<div class="page-content">')
+        html.append('<!-- {} -->'.format(EXPORT_BUILD))
 
         if show_title:
-            html.append('<h1 class="doc-title">{}</h1>'.format(display_title))
-            if "::" in deck_name:
-                html.append('<div class="sub">{}</div>'.format(
-                    deck_name.replace("::", " &rsaquo; ")))
+            html.append('<h1 class="doc-title">{}</h1>'.format(
+                html_module.escape(display_title)))
+            html.append('<div class="sub">{} {}</div>'.format(
+                html_module.escape(_t("deck_lbl")),
+                html_module.escape(deck_path)))
 
         card_ids = mw.col.find_cards('"deck:{}"'.format(deck_name))
         logger.log("Kart: {}".format(len(card_ids)))
@@ -2655,8 +2710,8 @@ class PDFExportDialog(QDialog):
         break_h_px = content_h_px
 
         if show_title:
-            _title_h = int((bsz + 6) * lh + 22)
-            _sub_h = int((bsz - 2) * lh + min_gap + 2) if "::" in deck_name else 0
+            _title_h = int((bsz + 6) * lh + 8 + title_gap)
+            _sub_h = int((bsz - 2) * lh + min_gap + 2)
             title_h_est = _title_h + _sub_h
         else:
             title_h_est = 0
@@ -2680,55 +2735,51 @@ class PDFExportDialog(QDialog):
             return '<div class="page-break"></div>'
 
 
-        def _text_len(html_str):
-            return len(re.sub(r'<[^>]+>', '', html_str or ''))
+        def _text_metrics(html_str):
+            text = html_str or ""
+            text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+            text = re.sub(r"(?i)</(p|div|li|tr|h[1-6])>", "\n", text)
+            text = re.sub(r"<[^>]+>", " ", text)
+            lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines()]
+            hard_lines = sum(1 for line in lines if line)
+            return sum(len(line) for line in lines), hard_lines
 
         # ---- FIX: improved card height estimation ----
-        def estimate_card_h(sections_count, has_image, text_chars=0, n_images=1):
+        def estimate_card_h(sections_count, has_image, text_chars=0, n_images=1, hard_lines=0):
             overhead = (20 if show_nums else 0) + sections_count * (padh * 2 + 2) + max(0, sections_count - 1)
             effective_w = card_max_w if card_max_w > 0 else (pw_mm * ppm - 2 * mg_px)
             cpp = max(10, int((effective_w - pad * 2) / (bsz * 0.6)))
             if text_chars > 0:
-                n_lines = max(sections_count, (text_chars + cpp - 1) // cpp)
+                n_lines = max(sections_count, hard_lines, (text_chars + cpp - 1) // cpp)
             else:
                 n_lines = sections_count * 2
             text_h = n_lines * bsz * lh
             img_est = min(n_images, 5) * min(img_h, 200) if has_image else 0
             return int(overhead + text_h + img_est + 4)
 
+        def card_class(est):
+            if mode == "pdf" and est > break_h_px * 0.45:
+                return "card long-card"
+            return "card"
+
         def pack_compact_pages(items):
-            # Compact mode may reorder cards to reduce page waste.
-            sorted_items = sorted(items, key=lambda c: (-c[1], c[0]))
             pages = []
-            pages_used = []
-            page_counts = []
+            current_page = []
+            used_h = title_h_est
 
-            for item in sorted_items:
+            for item in sorted(items, key=lambda c: c[0]):
                 _, est, _ = item
-                best_page = None
-                best_remaining = None
-
-                for pi in range(len(pages)):
-                    page_capacity = break_h_px - (title_h_est if pi == 0 else 0)
-                    needed_h = est + (card_gap if page_counts[pi] > 0 else 0)
-                    remaining = page_capacity - (pages_used[pi] + needed_h)
-                    if remaining < 0:
-                        continue
-                    if best_remaining is None or remaining < best_remaining:
-                        best_page = pi
-                        best_remaining = remaining
-
-                if best_page is None:
-                    pages.append([item])
-                    pages_used.append(est)
-                    page_counts.append(1)
+                needed_h = est + (card_gap if current_page else 0)
+                if current_page and used_h + needed_h > break_h_px:
+                    pages.append(current_page)
+                    current_page = [item]
+                    used_h = est
                 else:
-                    pages[best_page].append(item)
-                    pages_used[best_page] += est + (card_gap if page_counts[best_page] > 0 else 0)
-                    page_counts[best_page] += 1
+                    current_page.append(item)
+                    used_h += needed_h
 
-            for page in pages:
-                page.sort(key=lambda c: c[0])
+            if current_page:
+                pages.append(current_page)
 
             return pages
 
@@ -2756,10 +2807,11 @@ class PDFExportDialog(QDialog):
                     sec_count = (1 if q else 0) + (1 if a else 0)
                     has_img = "base64" in (q or '') or "base64" in (a or '')
                     n_imgs = max(1, (q or '').count('base64') + (a or '').count('base64')) if has_img else 0
-                    est = estimate_card_h(sec_count, has_img, _text_len((q or '') + (a or '')), n_imgs)
+                    text_chars, hard_lines = _text_metrics((q or '') + (a or ''))
+                    est = estimate_card_h(sec_count, has_img, text_chars, n_imgs, hard_lines)
 
                     alt = ' style="background:{}"'.format(t["alt"]) if zebra and idx % 2 == 1 else ""
-                    parts = ['<div class="card"{}>'.format(alt)]
+                    parts = ['<div class="{}"{}>'.format(card_class(est), alt)]
                     if show_nums:
                         parts.append('<div class="cnum">#{} &middot; {}</div>'.format(idx + 1, nt_name))
                     if q:
@@ -2775,18 +2827,17 @@ class PDFExportDialog(QDialog):
                                 _t("rendered_back"), a))
                     parts.append("</div>")
 
-                    if compact and mode in ("pdf", "preview", "pdf_fallback"):
+                    if compact and mode in ("preview", "pdf_fallback"):
                         card_items.append((idx, est, parts))
-                    elif mode == "pdf":
-                        html.extend(parts)
                     else:
-                        needed_h = est + (card_gap if cards_on_page[0] > 0 else 0)
-                        if accumulated_h[0] + needed_h > content_h_px and cards_on_page[0] > 0:
-                            pb = emit_page_break(est <= page_h_px * 0.75)
-                            if pb:
-                                html.append(pb)
-                        accumulated_h[0] += est + (card_gap if cards_on_page[0] > 0 else 0)
-                        cards_on_page[0] += 1
+                        if mode != "pdf":
+                            needed_h = est + (card_gap if cards_on_page[0] > 0 else 0)
+                            if accumulated_h[0] + needed_h > content_h_px and cards_on_page[0] > 0:
+                                pb = emit_page_break(est <= page_h_px * 0.75)
+                                if pb:
+                                    html.append(pb)
+                            accumulated_h[0] += est + (card_gap if cards_on_page[0] > 0 else 0)
+                            cards_on_page[0] += 1
                         html.extend(parts)
                     cards_ok += 1
                 except Exception as e:
@@ -2828,10 +2879,11 @@ class PDFExportDialog(QDialog):
                     all_content = "".join(sq) + "".join(sa) + "".join(sx)
                     has_img = "base64" in all_content
                     n_imgs = max(1, all_content.count('base64')) if has_img else 0
-                    est = estimate_card_h(sec_count, has_img, _text_len(all_content), n_imgs)
+                    text_chars, hard_lines = _text_metrics(all_content)
+                    est = estimate_card_h(sec_count, has_img, text_chars, n_imgs, hard_lines)
 
                     alt = ' style="background:{}"'.format(t["alt"]) if zebra and idx % 2 == 1 else ""
-                    parts = ['<div class="card"{}>'.format(alt)]
+                    parts = ['<div class="{}"{}>'.format(card_class(est), alt)]
                     if show_nums:
                         parts.append('<div class="cnum">#{}</div>'.format(idx + 1))
                     if sq:
@@ -2846,25 +2898,24 @@ class PDFExportDialog(QDialog):
                         parts.append('<div class="sec-x">{}</div>'.format("".join(sx)))
                     parts.append("</div>")
 
-                    if compact and mode in ("pdf", "preview", "pdf_fallback"):
+                    if compact and mode in ("preview", "pdf_fallback"):
                         card_items.append((idx, est, parts))
-                    elif mode == "pdf":
-                        html.extend(parts)
                     else:
-                        needed_h = est + (card_gap if cards_on_page[0] > 0 else 0)
-                        if accumulated_h[0] + needed_h > content_h_px and cards_on_page[0] > 0:
-                            pb = emit_page_break(est <= page_h_px * 0.75)
-                            if pb:
-                                html.append(pb)
-                        accumulated_h[0] += est + (card_gap if cards_on_page[0] > 0 else 0)
-                        cards_on_page[0] += 1
+                        if mode != "pdf":
+                            needed_h = est + (card_gap if cards_on_page[0] > 0 else 0)
+                            if accumulated_h[0] + needed_h > content_h_px and cards_on_page[0] > 0:
+                                pb = emit_page_break(est <= page_h_px * 0.75)
+                                if pb:
+                                    html.append(pb)
+                            accumulated_h[0] += est + (card_gap if cards_on_page[0] > 0 else 0)
+                            cards_on_page[0] += 1
                         html.extend(parts)
                     cards_ok += 1
                 except Exception as e:
                     logger.error("Karta #{}".format(idx), e)
                     cards_skip += 1
 
-        if compact and card_items and mode in ("pdf", "preview"):
+        if compact and card_items and mode == "preview":
             pages = pack_compact_pages(card_items)
             for pi, page_cards in enumerate(pages):
                 if pi > 0:

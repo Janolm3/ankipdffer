@@ -2,6 +2,14 @@
 
 All notable changes to the **AnkiPdffer Dev** add-on will be documented in this file.
 
+## [1.3.3] - 2026-05-22
+
+### Fixed
+- Isolated the WeasyPrint subprocess from Anki and other add-on Python paths to avoid cross-add-on `PIL` import failures.
+- Restored natural PDF card ordering and improved compact layout pagination for long cards.
+- Added the full Anki deck path under the export title and improved export path logging.
+- Fixed malformed CSS sanitization rules in generated PDF HTML.
+
 ## [1.3.2] - 2026-05-19
 
 ### Changed
