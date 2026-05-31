@@ -1,9 +1,32 @@
-[21:16:51.748] == Export START ==
-[21:16:52.044] Theme: Dark (1)
-[21:16:52.045] Kart: 47
-[21:16:52.056] OK: 47, skip: 0
-[21:16:52.056] Img OK: 6, fail: 0
-[21:16:53.375] WeasyPrint python: /opt/homebrew/opt/python@3.14/bin/python3.14
-[21:16:53.375] PDF engine: WeasyPrint
-[21:16:53.376] PDF: 282045 B
-[21:16:53.376] == DONE (1.63s) ==
+[14:24:31.085] == Export START ==
+[14:24:31.099] Build: fontconfig-font-fix-20260531
+[14:24:31.099] Theme: Dark (1)
+[14:24:31.099] Font [pdf]: System (index 0, 13 px)
+[14:24:31.099] Font stack [pdf]: 'SF Pro Text','SF Pro Display','System Font',-apple-system,BlinkMacSystemFont,'Inter','Helvetica Neue',Helvetica,Arial,sans-serif
+[14:24:31.099] Font candidates [pdf]: SF Pro Text, SF Pro Display, System Font, Inter, Helvetica Neue, Helvetica, Arial
+[14:24:31.099] Font import [pdf]: Google Inter CSS included
+[14:24:31.100] Qt font [pdf]: SF Pro Text -> SF Pro Text (installed)
+[14:24:31.100] Qt font [pdf]: SF Pro Display -> SF Pro Display (installed)
+[14:24:31.100] Qt font [pdf]: System Font -> Helvetica (fallback)
+[14:24:31.100] Qt font [pdf]: Inter -> Inter (installed)
+[14:24:31.100] Qt font [pdf]: Helvetica Neue -> Helvetica Neue (installed)
+[14:24:31.100] Qt font [pdf]: Helvetica -> Helvetica (installed)
+[14:24:31.100] Qt font [pdf]: Arial -> Arial (installed)
+[14:24:31.101] Kart: 30
+[14:24:31.109] OK: 30, skip: 0
+[14:24:31.109] Img OK: 3, fail: 0
+[14:24:32.633] PDF engine: WeasyPrint
+[14:24:32.633] Font debug: fontconfig override /var/folders/39/8s0hpx2d7mz6p771343pl5140000gn/T/anki-pdffer-fonts-0a8_4vuk.conf
+[14:24:32.633] Font debug: fontconfig exact families SF Pro Text, SF Pro Display, System Font, Inter, Helvetica Neue, Helvetica, Arial
+[14:24:32.633] Font debug: selected System (index 0, 13 px)
+[14:24:32.633] Font debug: CSS stack 'SF Pro Text','SF Pro Display','System Font',-apple-system,BlinkMacSystemFont,'Inter','Helvetica Neue',Helvetica,Arial,sans-serif
+[14:24:32.633] Font debug: fc-match SF Pro Text -> SF-Pro-Text-Regular.otf: "SF Pro Text" "Regular"
+[14:24:32.633] Font debug: fc-match SF Pro Display -> SF-Pro-Display-Regular.otf: "SF Pro Display" "Regular"
+[14:24:32.633] Font debug: fc-match System Font -> SFNS.ttf: "System Font" "Regular"
+[14:24:32.633] Font debug: fc-match Inter -> Inter-VariableFont_opsz,wght.ttf: "Inter" "Regular"
+[14:24:32.633] Font debug: fc-match Helvetica Neue -> HelveticaNeue.ttc: "Helvetica Neue" "Regular"
+[14:24:32.633] Font debug: fc-match Helvetica -> Helvetica.ttc: "Helvetica" "Regular"
+[14:24:32.633] Font debug: fc-match Arial -> arial.ttf: "Arial" "Regular"
+[14:24:32.633] PDF path: /Users/jmaguza/Desktop/Farmakologia kolokwium 3 - live 26.05.26 - fixed_f49bc8.pdf
+[14:24:32.633] PDF: 426491 B
+[14:24:32.633] == DONE (1.55s) ==

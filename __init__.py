@@ -350,7 +350,7 @@ class ExportLogger:
 
 
 logger = ExportLogger()
-EXPORT_BUILD = "deck-path-header-20260522"
+EXPORT_BUILD = "fontconfig-font-fix-20260531"
 
 
 class CustomWebEnginePage(QWebEnginePage):
@@ -467,8 +467,8 @@ CARD_WIDTH_PRESETS = [
 ]
 
 FONT_OPTIONS = [
-    ("System", "-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Helvetica,Arial,sans-serif"),
-    ("Inter", "'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif"),
+    ("System", "'SF Pro Text','SF Pro Display','System Font',-apple-system,BlinkMacSystemFont,'Inter','Helvetica Neue',Helvetica,Arial,sans-serif"),
+    ("Inter", "'Inter','SF Pro Text',-apple-system,BlinkMacSystemFont,'Helvetica Neue',sans-serif"),
     ("Helvetica", "'Helvetica Neue',Helvetica,Arial,sans-serif"),
     ("Arial", "Arial,'Helvetica Neue',Helvetica,sans-serif"),
     ("Georgia", "Georgia,'Times New Roman',Times,serif"),
@@ -480,6 +480,61 @@ FONT_OPTIONS = [
     ("Fira Code", "'Fira Code','Courier New',monospace"),
     ("Courier New", "'Courier New',Courier,monospace"),
 ]
+
+GENERIC_FONT_FAMILIES = {
+    "serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui",
+    "ui-serif", "ui-sans-serif", "ui-monospace", "ui-rounded",
+    "emoji", "math", "fangsong", "blinkmacsystemfont",
+}
+
+
+def _split_font_stack(stack):
+    families = []
+    buf = []
+    quote = None
+    escaped = False
+    for ch in stack or "":
+        if escaped:
+            buf.append(ch)
+            escaped = False
+            continue
+        if ch == "\\":
+            escaped = True
+            continue
+        if quote:
+            if ch == quote:
+                quote = None
+            else:
+                buf.append(ch)
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            continue
+        if ch == ",":
+            family = "".join(buf).strip()
+            if family:
+                families.append(family)
+            buf = []
+            continue
+        buf.append(ch)
+    family = "".join(buf).strip()
+    if family:
+        families.append(family)
+    return families
+
+
+def _real_font_candidates(stack):
+    out = []
+    seen = set()
+    for family in _split_font_stack(stack):
+        normalized = family.lower()
+        if normalized in GENERIC_FONT_FAMILIES or family.startswith("-"):
+            continue
+        if normalized not in seen:
+            seen.add(normalized)
+            out.append(family)
+    return out
+
 
 THEME_PRESETS = [
     dict(
@@ -807,6 +862,8 @@ class PDFExportDialog(QDialog):
             self.setMinimumSize(860, 560)
         self._active_export_theme_index = None
         self._busy_depth = 0
+        self._font_debug_logged_modes = set()
+        self._pdf_ready_logged = False
 
         root = QVBoxLayout()
         root.setContentsMargins(18, 18, 18, 14)
@@ -1485,6 +1542,16 @@ class PDFExportDialog(QDialog):
             env.pop(key, None)
         env["PYTHONNOUSERSITE"] = "1"
         env["PYTHONDONTWRITEBYTECODE"] = "1"
+        path = env.get("PATH", "")
+        parts = [p for p in path.split(os.pathsep) if p]
+        for extra in (
+            "/opt/homebrew/bin", "/opt/homebrew/sbin",
+            "/usr/local/bin", "/usr/local/sbin",
+            "/usr/bin", "/bin", "/usr/sbin", "/sbin",
+        ):
+            if extra not in parts:
+                parts.append(extra)
+        env["PATH"] = os.pathsep.join(parts)
         return env
 
     @staticmethod
@@ -1592,6 +1659,70 @@ class PDFExportDialog(QDialog):
         idx = self._theme_index() if idx is None else idx
         return THEME_DISPLAY_NAMES[idx] if 0 <= idx < len(THEME_DISPLAY_NAMES) else THEME_DISPLAY_NAMES[0]
 
+    def _font_debug_snapshot(self):
+        idx = self.font_combo.currentIndex()
+        if not 0 <= idx < len(FONT_OPTIONS):
+            idx = 0
+        label, stack = FONT_OPTIONS[idx]
+        return {
+            "index": idx,
+            "label": label,
+            "stack": stack,
+            "size": self.fontsize_spin.value(),
+            "families": _real_font_candidates(stack),
+            "raw_families": _split_font_stack(stack),
+            "debug": self.debug_cb.isChecked(),
+        }
+
+    def _qt_font_debug_matches(self, families):
+        try:
+            try:
+                installed = QFontDatabase.families()
+            except TypeError:
+                installed = QFontDatabase().families()
+            installed_by_lower = {name.lower(): name for name in installed}
+        except Exception as e:
+            return ["Qt font database unavailable: {}".format(e)]
+
+        if not families:
+            return ["no concrete font families in CSS stack"]
+
+        matches = []
+        for family in families[:8]:
+            actual = ""
+            try:
+                actual = QFontInfo(QFont(family)).family()
+            except Exception:
+                pass
+            installed_name = installed_by_lower.get(family.lower())
+            status = "installed" if installed_name else "fallback"
+            if actual and actual.lower() == family.lower():
+                status = "installed"
+            target = actual or installed_name or "n/a"
+            matches.append("{} -> {} ({})".format(family, target, status))
+        return matches
+
+    def _log_font_debug(self, mode, info):
+        key = "{}:{}:{}:{}".format(mode, info["index"], info["size"], info["stack"])
+        if key in self._font_debug_logged_modes:
+            return
+        self._font_debug_logged_modes.add(key)
+
+        logger.log(
+            "Font [{}]: {} (index {}, {} px)".format(
+                mode, info["label"], info["index"], info["size"]
+            )
+        )
+        logger.log("Font stack [{}]: {}".format(mode, info["stack"]))
+        if not self.debug_cb.isChecked():
+            return
+
+        candidates = ", ".join(info["families"]) if info["families"] else "(none)"
+        logger.log("Font candidates [{}]: {}".format(mode, candidates))
+        logger.log("Font import [{}]: Google Inter CSS included".format(mode))
+        for match in self._qt_font_debug_matches(info["families"]):
+            logger.log("Qt font [{}]: {}".format(mode, match))
+
     def _build_pdf_pagination_script(self):
         pw_mm, ph_mm = self._get_page_dims()
         ppm = 3.7795275591
@@ -1688,14 +1819,26 @@ class PDFExportDialog(QDialog):
         return !img.complete;
     }).length;
     var fontsLoaded = true;
+    var fontFaces = [];
     if (document.fonts && document.fonts.status) {
         fontsLoaded = document.fonts.status === 'loaded';
+        if (document.fonts.forEach) {
+            document.fonts.forEach(function(face) {
+                fontFaces.push({
+                    family: face.family,
+                    status: face.status,
+                    weight: face.weight,
+                    style: face.style
+                });
+            });
+        }
     }
     return {
         ready: fontsLoaded && pendingImages === 0,
         fontsLoaded: fontsLoaded,
         pendingImages: pendingImages,
-        imageCount: images.length
+        imageCount: images.length,
+        fontFaces: fontFaces.slice(0, 12)
     };
 })();
 """
@@ -1784,6 +1927,7 @@ class PDFExportDialog(QDialog):
         try:
             self._begin_busy(_t("busy_legacy"))
             logger.start("Legacy")
+            self._font_debug_logged_modes = set()
             self._active_export_theme_index = self.theme_radio.currentIndex()
             logger.log("Build: {}".format(EXPORT_BUILD))
             logger.log("Theme: {} ({})".format(self._theme_name(), self._theme_index()))
@@ -1808,6 +1952,7 @@ class PDFExportDialog(QDialog):
         try:
             self._begin_busy(_t("busy_preview"))
             logger.start("Preview")
+            self._font_debug_logged_modes = set()
             self._active_export_theme_index = self.theme_radio.currentIndex()
             logger.log("Build: {}".format(EXPORT_BUILD))
             logger.log("Theme: {} ({})".format(self._theme_name(), self._theme_index()))
@@ -1837,6 +1982,7 @@ class PDFExportDialog(QDialog):
         if not sp:
             return
         logger.start("Export")
+        self._font_debug_logged_modes = set()
         self._begin_busy(_t("busy_pdf_html"))
         self.export_btn.setText(_t("generating"))
         try:
@@ -1860,6 +2006,7 @@ class PDFExportDialog(QDialog):
 
     def _start_qt_pdf_export(self, path):
         logger.log("Generating Qt WebEngine fallback layout")
+        self._pdf_ready_logged = False
         html, _ = self._build_html(mode="pdf_fallback")
         fd, self.temp_fallback_path = tempfile.mkstemp(suffix=".html", text=True)
         os.close(fd)
@@ -1903,6 +2050,28 @@ class PDFExportDialog(QDialog):
                 QTimer.singleShot(150, lambda: self._do_print(path))
 
     def _after_pdf_ready(self, path, attempt, result):
+        if result and (result.get("ready") or attempt >= 20) and not self._pdf_ready_logged:
+            self._pdf_ready_logged = True
+            faces = result.get("fontFaces") or []
+            face_bits = []
+            for face in faces[:6]:
+                if isinstance(face, dict):
+                    face_bits.append(
+                        "{}:{}:{}:{}".format(
+                            face.get("family", ""),
+                            face.get("status", ""),
+                            face.get("weight", ""),
+                            face.get("style", ""),
+                        )
+                    )
+            logger.log(
+                "Qt PDF ready: fontsLoaded={}, pendingImages={}, imageCount={}, fontFaces={}".format(
+                    result.get("fontsLoaded"),
+                    result.get("pendingImages"),
+                    result.get("imageCount"),
+                    "; ".join(face_bits) if face_bits else "(none)",
+                )
+            )
         if result and result.get("ready"):
             QTimer.singleShot(150, lambda: self._do_print(path))
             return
@@ -1918,9 +2087,10 @@ class PDFExportDialog(QDialog):
         self._set_busy_message(_t("busy_pdf_render"))
         self._external_export_result = None
         html_path = self.temp_html_path
+        font_debug = self._font_debug_snapshot()
         worker = threading.Thread(
             target=self._run_external_export_job,
-            args=(html_path, path),
+            args=(html_path, path, font_debug),
             daemon=True,
         )
         self._external_export_thread = worker
@@ -1944,10 +2114,10 @@ class PDFExportDialog(QDialog):
 
         self._start_qt_pdf_export(path)
 
-    def _run_external_export_job(self, html_path, path):
+    def _run_external_export_job(self, html_path, path, font_debug):
         logs = []
         try:
-            ok = self._export_pdf_via_weasyprint(path, html_path, logs)
+            ok = self._export_pdf_via_weasyprint(path, html_path, logs, font_debug)
             if ok:
                 self._external_export_result = {"success": True, "logs": logs}
                 return
@@ -1955,7 +2125,7 @@ class PDFExportDialog(QDialog):
             logs.append("External export exception: {}".format(e))
         self._external_export_result = {"success": False, "logs": logs}
 
-    def _export_pdf_via_weasyprint(self, path, html_path, logs):
+    def _export_pdf_via_weasyprint(self, path, html_path, logs, font_debug):
         vendor_dir = self._vendor_dir()
         if not os.path.isdir(vendor_dir):
             logs.append("PDF engine: WeasyPrint unavailable (.vendor missing)")
@@ -1967,11 +2137,84 @@ class PDFExportDialog(QDialog):
 
         logs.append("PDF engine: WeasyPrint")
         script = (
-            "import os, sys\n"
-            "vendor_dir, html_path, pdf_path = sys.argv[1:4]\n"
+            "import json, os, shutil, subprocess, sys, tempfile\n"
+            "from xml.sax.saxutils import escape\n"
+            "vendor_dir, html_path, pdf_path, font_json = sys.argv[1:5]\n"
             "sys.path.insert(0, vendor_dir)\n"
-            "from weasyprint import HTML\n"
-            "HTML(filename=html_path, base_url=os.path.dirname(html_path)).write_pdf(pdf_path)\n"
+            "try:\n"
+            "    font_info = json.loads(font_json)\n"
+            "except Exception:\n"
+            "    font_info = {}\n"
+            "def font_log(message):\n"
+            "    print('Font debug: {}'.format(message), flush=True)\n"
+            "def fontconfig_override(families):\n"
+            "    families = [f for f in families if f]\n"
+            "    if not families:\n"
+            "        return None\n"
+            "    config_candidates = [\n"
+            "        os.environ.get('FONTCONFIG_FILE'),\n"
+            "        '/opt/homebrew/etc/fonts/fonts.conf',\n"
+            "        '/usr/local/etc/fonts/fonts.conf',\n"
+            "        '/etc/fonts/fonts.conf',\n"
+            "    ]\n"
+            "    include_path = next((p for p in config_candidates if p and os.path.exists(p)), None)\n"
+            "    fd, config_path = tempfile.mkstemp(prefix='anki-pdffer-fonts-', suffix='.conf')\n"
+            "    with os.fdopen(fd, 'w', encoding='utf-8') as config:\n"
+            "        config.write('<?xml version=\"1.0\"?>\\n')\n"
+            "        config.write('<!DOCTYPE fontconfig SYSTEM \"urn:fontconfig:fonts.dtd\">\\n')\n"
+            "        config.write('<fontconfig>\\n')\n"
+            "        if include_path:\n"
+            "            config.write('  <include>{}</include>\\n'.format(escape(include_path)))\n"
+            "        else:\n"
+            "            for font_dir in ('/System/Library/Fonts', '/Library/Fonts', os.path.expanduser('~/Library/Fonts')):\n"
+            "                if os.path.isdir(font_dir):\n"
+            "                    config.write('  <dir>{}</dir>\\n'.format(escape(font_dir)))\n"
+            "        seen = set()\n"
+            "        for family in families:\n"
+            "            family_key = family.lower()\n"
+            "            if family_key in seen:\n"
+            "                continue\n"
+            "            seen.add(family_key)\n"
+            "            family_xml = escape(family)\n"
+            "            config.write('  <match target=\"pattern\">\\n')\n"
+            "            config.write('    <test name=\"family\" compare=\"eq\"><string>{}</string></test>\\n'.format(family_xml))\n"
+            "            config.write('    <edit name=\"genericfamily\" mode=\"assign_replace\"><int>0</int></edit>\\n')\n"
+            "            config.write('  </match>\\n')\n"
+            "        config.write('</fontconfig>\\n')\n"
+            "    os.environ['FONTCONFIG_FILE'] = config_path\n"
+            "    return config_path\n"
+            "font_config_path = fontconfig_override(font_info.get('families') or [])\n"
+            "try:\n"
+            "    if font_config_path and font_info.get('debug'):\n"
+            "        font_log('fontconfig override {}'.format(font_config_path))\n"
+            "        font_log('fontconfig exact families {}'.format(', '.join(font_info.get('families') or [])))\n"
+            "    if font_info.get('debug'):\n"
+            "        font_log('selected {} (index {}, {} px)'.format(\n"
+            "            font_info.get('label', '?'), font_info.get('index', '?'), font_info.get('size', '?')))\n"
+            "        font_log('CSS stack {}'.format(font_info.get('stack', '')))\n"
+            "        families = font_info.get('families') or []\n"
+            "        fc_match = shutil.which('fc-match')\n"
+            "        if fc_match and families:\n"
+            "            for family in families[:8]:\n"
+            "                try:\n"
+            "                    match = subprocess.run(\n"
+            "                        [fc_match, family], capture_output=True, text=True, timeout=5)\n"
+            "                    detail = (match.stdout or match.stderr or '').strip().splitlines()\n"
+            "                    font_log('fc-match {} -> {}'.format(family, detail[0] if detail else 'no output'))\n"
+            "                except Exception as e:\n"
+            "                    font_log('fc-match {} error: {}'.format(family, e))\n"
+            "        elif not fc_match:\n"
+            "            font_log('fc-match unavailable')\n"
+            "        else:\n"
+            "            font_log('no concrete font families in CSS stack')\n"
+            "    from weasyprint import HTML\n"
+            "    HTML(filename=html_path, base_url=os.path.dirname(html_path)).write_pdf(pdf_path)\n"
+            "finally:\n"
+            "    if font_config_path:\n"
+            "        try:\n"
+            "            os.remove(font_config_path)\n"
+            "        except OSError:\n"
+            "            pass\n"
         )
         try:
             if os.path.exists(path):
@@ -1981,12 +2224,20 @@ class PDFExportDialog(QDialog):
                 logs.append("WeasyPrint export error: invalid python [{}]".format(python_bin))
                 return False
             result = subprocess.run(
-                command + ["-I", "-B", "-c", script, vendor_dir, html_path, path],
+                command + [
+                    "-I", "-B", "-c", script, vendor_dir, html_path, path,
+                    json.dumps(font_debug, sort_keys=True),
+                ],
                 capture_output=True,
                 text=True,
                 timeout=120,
                 env=self._isolated_python_env(),
             )
+            if result.stdout:
+                for line in result.stdout.strip().splitlines():
+                    logs.append(line[:1000])
+            if result.returncode == 0 and result.stderr and font_debug.get("debug"):
+                logs.append("WeasyPrint stderr: {}".format(result.stderr.strip()[:2000]))
             if result.returncode != 0:
                 logs.append("WeasyPrint exit: {}".format(result.returncode))
                 if result.stderr:
@@ -2222,9 +2473,10 @@ class PDFExportDialog(QDialog):
         compact = self.layout_radio.currentIndex() == 1
         theme_idx = self._theme_index()
 
-        fi = self.font_combo.currentIndex()
-        font = FONT_OPTIONS[fi][1] if fi < len(FONT_OPTIONS) else FONT_OPTIONS[0][1]
-        bsz = self.fontsize_spin.value()
+        font_info = self._font_debug_snapshot()
+        font = font_info["stack"]
+        bsz = font_info["size"]
+        self._log_font_debug(mode, font_info)
         pad = self.padding_spin.value()
         padh = max(4, pad - 4)
         min_gap = self.gap_spin.value()
