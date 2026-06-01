@@ -127,6 +127,8 @@ _STRINGS = {
         "rendered_back": "Back",
         "page_break_lbl": "✂ Page break",
         "cb_high_contrast": "High contrast (override card styles)",
+        "pdf_footer_generated": "Generated with {tool} v{version}",
+        "pdf_top_tool_notice": "{tool} · {url}",
     },
     "pl": {
         "window_title": "Anki → PDF",
@@ -231,6 +233,8 @@ _STRINGS = {
         "rendered_back": "Tył",
         "page_break_lbl": "✂ Podział strony",
         "cb_high_contrast": "Wysoki kontrast (nadpisz style kart)",
+        "pdf_footer_generated": "Wygenerowano przez {tool} v{version}",
+        "pdf_top_tool_notice": "{tool} · {url}",
     },
 }
 
@@ -350,7 +354,20 @@ class ExportLogger:
 
 
 logger = ExportLogger()
-EXPORT_BUILD = "fontconfig-font-fix-20260531"
+EXPORT_BUILD = "pdf-tool-footer-20260601"
+TOOL_NAME = "AnkiPdffer"
+TOOL_URL = "https://ankiweb.net/shared/info/1987190048"
+TOOL_URL_DISPLAY = "ankiweb.net/shared/info/1987190048"
+
+
+def _addon_version(default="1.3.1"):
+    try:
+        manifest_path = os.path.join(os.path.dirname(__file__), "manifest.json")
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+        return manifest.get("human_version", default)
+    except Exception:
+        return default
 
 
 class CustomWebEnginePage(QWebEnginePage):
@@ -1164,15 +1181,7 @@ class PDFExportDialog(QDialog):
         # --- Bottom buttons ---
         bottom = QHBoxLayout()
         bottom.setContentsMargins(12, 4, 12, 0)
-        addon_version = "1.3.1"
-        try:
-            addon_dir = os.path.dirname(__file__)
-            manifest_path = os.path.join(addon_dir, "manifest.json")
-            with open(manifest_path, "r", encoding="utf-8") as f:
-                manifest = json.load(f)
-                addon_version = manifest.get("human_version", "1.3.1")
-        except Exception:
-            pass
+        addon_version = _addon_version()
         v_lbl = QLabel(f"v {addon_version}")
         v_lbl.setObjectName("VersionLabel")
         bottom.addWidget(v_lbl)
@@ -2579,6 +2588,13 @@ class PDFExportDialog(QDialog):
         else:
             compact_css = ""
 
+        footer_max_w_css = "{}px".format(card_max_w) if card_max_w > 0 else "640px"
+        footer_margin = max(14, min_gap * 2)
+        footer_pad = max(8, padh)
+        footer_sz = max(9, bsz - 2)
+        top_notice_sz = max(8, bsz - 3)
+        top_notice_gap = max(16, min_gap * 2)
+
         content_css = (
             "@import url('https://fonts.googleapis.com/css2?"
             "family=Inter:wght@400;500;600;700;800&display=swap');"
@@ -2629,6 +2645,15 @@ class PDFExportDialog(QDialog):
             ".rs .label{{font-size:{flsz}px;font-weight:600;color:{mut};"
             "text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px}}"
             ".nightMode,.night_mode{{all:unset!important}}"
+            ".export-topnotice{{margin:0 auto {top_notice_gap}px;color:{mut};"
+            "font-size:{top_notice_sz}px;line-height:1.25;text-align:center;"
+            "max-width:{footer_max_w};width:100%;overflow-wrap:anywhere}}"
+            ".export-topnotice a{{color:{mut};text-decoration:none;font-weight:600}}"
+            ".export-footer{{margin:{footer_margin}px auto 0;padding:{footer_pad}px 0 0;"
+            "border-top:1px solid {brd};color:{mut};font-size:{footer_sz}px;"
+            "line-height:1.35;text-align:center;break-inside:avoid;page-break-inside:avoid;"
+            "max-width:{footer_max_w};width:100%;overflow-wrap:anywhere}}"
+            ".export-footer a{{color:{acc};text-decoration:none;font-weight:600}}"
             "{content_max_w}"
             "{sanitise}"
             "{compact_overrides}"
@@ -2636,11 +2661,14 @@ class PDFExportDialog(QDialog):
             "{hc_css}"
         ).format(
             font=font, txt=t["txt"], bsz=bsz, lh=lh,
-            h1sz=bsz + 6, acc=t["acc"], mut=t["mut"], titlegap=title_gap,
+            h1sz=bsz + 8, acc=t["acc"], mut=t["mut"], titlegap=title_gap,
             subsz=bsz - 2, subgap=min_gap + 2,
             card_extra=card_extra, card=t["card"], gap=css_gap,
             pad=pad, padh=padh, padx=pad + 2,
             div=t["div"], flsz=label_sz, brd=t["brd"], img_h=img_h,
+            footer_margin=footer_margin, footer_pad=footer_pad,
+            footer_sz=footer_sz, footer_max_w=footer_max_w_css,
+            top_notice_sz=top_notice_sz, top_notice_gap=top_notice_gap,
             content_max_w=content_max_w_css,
             sanitise=sanitise_css,
             compact_overrides=compact_css,
@@ -2754,6 +2782,21 @@ class PDFExportDialog(QDialog):
             body_classes.append("grid-mode")
         body_classes.append(THEME_CLASS_NAMES[theme_idx] if 0 <= theme_idx < len(THEME_CLASS_NAMES) else THEME_CLASS_NAMES[0])
         body_cls = ' class="{}"'.format(" ".join(body_classes)) if body_classes else ''
+        show_tool_notice = mode in ("pdf", "pdf_fallback", "preview")
+
+        def build_tool_top_notice():
+            top_label = _t("pdf_top_tool_notice").format(
+                tool=TOOL_NAME,
+                url=TOOL_URL_DISPLAY,
+            )
+            return (
+                '<div class="export-topnotice">'
+                '<a href="{}">{}</a>'
+                '</div>'
+            ).format(
+                html_module.escape(TOOL_URL),
+                html_module.escape(top_label),
+            )
 
         if mode == "pdf":
             _bg = t["body"]
@@ -2801,6 +2844,8 @@ class PDFExportDialog(QDialog):
         else:
             html.append('<div class="page-content">')
         html.append('<!-- {} -->'.format(EXPORT_BUILD))
+        if show_tool_notice and not show_title:
+            html.append(build_tool_top_notice())
 
         if show_title:
             html.append('<h1 class="doc-title">{}</h1>'.format(
@@ -2808,6 +2853,8 @@ class PDFExportDialog(QDialog):
             html.append('<div class="sub">{} {}</div>'.format(
                 html_module.escape(_t("deck_lbl")),
                 html_module.escape(deck_path)))
+            if show_tool_notice:
+                html.append(build_tool_top_notice())
 
         card_ids = mw.col.find_cards('"deck:{}"'.format(deck_name))
         logger.log("Kart: {}".format(len(card_ids)))
@@ -2961,12 +3008,13 @@ class PDFExportDialog(QDialog):
         content_h_px = page_h_px - top_mg_px - top_mg_px  # top + bottom margin
         break_h_px = content_h_px
 
+        top_notice_h_est = int(top_notice_sz * 1.25 + top_notice_gap) if show_tool_notice else 0
         if show_title:
-            _title_h = int((bsz + 6) * lh + 8 + title_gap)
+            _title_h = int((bsz + 8) * lh + 8 + title_gap)
             _sub_h = int((bsz - 2) * lh + min_gap + 2)
-            title_h_est = _title_h + _sub_h
+            title_h_est = top_notice_h_est + _title_h + _sub_h
         else:
-            title_h_est = 0
+            title_h_est = top_notice_h_est
         accumulated_h = [title_h_est]
         cards_on_page = [0]
 
@@ -2986,6 +3034,20 @@ class PDFExportDialog(QDialog):
                 return '<div style="break-before:page;height:{}px;display:block;margin:0;padding:0"></div>'.format(h)
             return '<div class="page-break"></div>'
 
+        def build_tool_footer():
+            footer_label = _t("pdf_footer_generated").format(
+                tool=TOOL_NAME,
+                version=_addon_version(),
+            )
+            return (
+                '<footer class="export-footer">'
+                '{} &middot; <a href="{}">{}</a>'
+                '</footer>'
+            ).format(
+                html_module.escape(footer_label),
+                html_module.escape(TOOL_URL),
+                html_module.escape(TOOL_URL_DISPLAY),
+            )
 
         def _text_metrics(html_str):
             text = html_str or ""
@@ -3194,6 +3256,9 @@ class PDFExportDialog(QDialog):
             card_items.sort(key=lambda c: c[0])
             for _, _, parts in card_items:
                 html.extend(parts)
+
+        if show_tool_notice:
+            html.append(build_tool_footer())
 
         if mode == "preview":
             html.append("</div></div>")
