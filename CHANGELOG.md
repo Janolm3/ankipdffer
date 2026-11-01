@@ -2,6 +2,41 @@
 
 All notable changes to the **AnkiPdffer Dev** add-on will be documented in this file.
 
+## [1.4.0] - 2026-11-01
+
+### Added
+- **Question / answer layouts**: keep each card together, print all questions followed by an answer key, or put each card's question on one page and its answer on the next (worksheet / self-test style).
+- **Image Occlusion pages**: export a page with every mask covering the image and a second page with the masks removed and numbered outlines drawn, either one entry per note (all masks at once) or one card per mask. Masks are drawn by the exporter itself, so rectangles, ellipses and polygons render without Anki's JavaScript.
+- **Cloze modes**: reveal answers, hide them as `[...]` (or `[hint]`), show the hidden version followed by the revealed one, or keep Anki's native card-per-cloze rendering.
+- **Per-note-type field settings**: the Fields tab is grouped by note type and every note type remembers its own field configuration (with a *Reset* button for each).
+- **Presets**: save the current options and field settings under a name, apply or delete them later, and reset everything to the original defaults.
+- **Filter, order and live count**: narrow an export with any Anki search (`tag:leech is:due`), order cards by deck, creation date or shuffle, and see "N cards · M notes" before exporting.
+- **Page numbers** (`3 / 12`) in the PDF footer.
+- **Interface languages**: Spanish, Portuguese, German, French, Italian, Russian, Chinese (Simplified) and Japanese, next to English and Polish. Missing strings fall back to English; new languages are added in `translations.py`.
+- **Developer tooling** (`dev/`): headless regression checks, dialog screenshots and sample PDFs (`dev/dev.sh preview`), a throw-away Anki sandbox (`dev/dev.sh sandbox`), and `dev/dev.sh sync` to install the working tree into Anki.
+
+### Changed
+- **Settings are saved automatically** (debounced, atomic write) whenever an option changes and again when the window is hidden or closed, instead of only on some actions. The window size and position are remembered too. Existing `settings.json` files are migrated to the new format on first load.
+- **One window**: *Tools → AnkiPdffer → Open export dialog…* and the quick-export shortcut restore the existing window (also when minimized) instead of opening another one. The window follows profile switches and language changes.
+- Google Fonts are only requested when the Inter stack is selected, so exports with other fonts work offline.
+- `release.sh` builds from a clean staging copy, ships every top-level module, defaults to the version in `manifest.json` and has a `--build-only` mode.
+
+### Fixed
+- Settings occasionally not surviving a switch between decks or pages.
+- Notes with several cards (reversed, cloze, Image Occlusion) being exported more than once in Fields mode.
+- `[sound:…]` / `[anki:play:…]` tags and Image Occlusion canvas/button markup leaking into exports.
+- Field names and card labels not being HTML-escaped.
+- Forced page breaks being ignored in the PDF because empty `div`s were hidden by the stylesheet.
+- Temporary HTML files left behind after a Qt WebEngine fallback export.
+
+## [1.3.4] - 2026-05-31
+
+### Fixed
+- WeasyPrint fontconfig lookup on macOS.
+
+### Added
+- PDF export attribution line.
+
 ## [1.3.3] - 2026-05-22
 
 ### Fixed

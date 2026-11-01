@@ -10,13 +10,20 @@ import json
 import uuid
 import shutil
 import shlex
+import random
 import html as html_module
 import subprocess
 import sys
 import threading
 from aqt import mw
 from aqt.qt import *
-from aqt.utils import showInfo, showWarning
+from aqt.utils import showInfo, showWarning, askUser
+
+from .store import (
+    DEFAULT_SETTINGS, DEFAULT_FIELD_CONFIG, MACHINE_KEYS, SettingsStore,
+    coerce_field_config, coerce_settings,
+)
+from .translations import LANGUAGES, STRINGS as _EXTRA_STRINGS
 
 try:
     from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
@@ -238,14 +245,18 @@ _STRINGS = {
     },
 }
 
-_lang = "en"
-try:
-    _sf = os.path.join(os.path.dirname(__file__), "settings.json")
-    if os.path.exists(_sf):
-        with open(_sf, encoding="utf-8") as _fh:
-            _lang = json.load(_fh).get("language", "en")
-except Exception:
-    pass
+for _code, _table in _EXTRA_STRINGS.items():
+    _STRINGS.setdefault(_code, {}).update(_table)
+
+_store = SettingsStore(os.path.join(os.path.dirname(__file__), "settings.json"))
+_lang = _store.settings.get("language", "en")
+if _lang not in _STRINGS:
+    _lang = "en"
+
+
+def _set_language(code):
+    global _lang
+    _lang = code if code in _STRINGS else "en"
 
 
 def _t(key):
@@ -354,13 +365,13 @@ class ExportLogger:
 
 
 logger = ExportLogger()
-EXPORT_BUILD = "pdf-tool-footer-20260601"
+EXPORT_BUILD = "1.4.0-20261101"
 TOOL_NAME = "AnkiPdffer"
 TOOL_URL = "https://ankiweb.net/shared/info/1987190048"
 TOOL_URL_DISPLAY = "ankiweb.net/shared/info/1987190048"
 
 
-def _addon_version(default="1.3.1"):
+def _addon_version(default="1.4.0"):
     try:
         manifest_path = os.path.join(os.path.dirname(__file__), "manifest.json")
         with open(manifest_path, "r", encoding="utf-8") as f:
@@ -379,9 +390,15 @@ class CustomWebEnginePage(QWebEnginePage):
 
 
 class FieldConfigWidget(QWidget):
-    def __init__(self, field_name, is_front=False, parent=None):
+    """One row of the Fields tab. `changed` fires on any edit so settings autosave."""
+
+    changed = pyqtSignal()
+
+    def __init__(self, field_name, is_front=False, nt_id=0, nt_name="", config=None, parent=None):
         super().__init__(parent)
         self.field_name = field_name
+        self.nt_id = nt_id
+        self.nt_name = nt_name
         root = QVBoxLayout()
         root.setContentsMargins(8, 4, 8, 4)
         root.setSpacing(0)
@@ -391,8 +408,13 @@ class FieldConfigWidget(QWidget):
         self.export_cb = QCheckBox()
         self.export_cb.setChecked(True)
         row.addWidget(self.export_cb)
-        self.name_label = QLabel("<b>{}</b>".format(field_name))
+        self.name_label = QLabel(field_name)
+        self.name_label.setTextFormat(Qt.TextFormat.PlainText)
+        name_font = self.name_label.font()
+        name_font.setBold(True)
+        self.name_label.setFont(name_font)
         self.name_label.setMinimumWidth(120)
+        self.name_label.setToolTip(field_name)
         row.addWidget(self.name_label)
         self.section_combo = NoScrollComboBox()
         self.section_combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -413,7 +435,9 @@ class FieldConfigWidget(QWidget):
         row.addWidget(self.label_cb)
         row.addStretch()
         self.adv_btn = QPushButton("\u22ef")
-        self.adv_btn.setFixedSize(26, 26)
+        self.adv_btn.setObjectName("FieldMoreBtn")
+        self.adv_btn.setFixedSize(28, 26)
+        self.adv_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.adv_btn.clicked.connect(self._toggle)
         row.addWidget(self.adv_btn)
         root.addLayout(row)
@@ -453,6 +477,18 @@ class FieldConfigWidget(QWidget):
         root.addWidget(self.adv_panel)
         self.setLayout(root)
 
+        if config:
+            self.set_config(config)
+        self._wire_changes()
+
+    def _wire_changes(self):
+        emit = lambda *_: self.changed.emit()
+        for cb in (self.export_cb, self.bold_cb, self.label_cb, self.italic_cb, self.underline_cb):
+            cb.toggled.connect(emit)
+        for combo in (self.section_combo, self.bg_combo, self.color_combo, self.align_combo):
+            combo.currentIndexChanged.connect(emit)
+        self.size_radio.group.idToggled.connect(emit)
+
     def _toggle(self):
         v = not self.adv_panel.isVisible()
         self.adv_panel.setVisible(v)
@@ -471,6 +507,19 @@ class FieldConfigWidget(QWidget):
             italic=self.italic_cb.isChecked(),
             underline=self.underline_cb.isChecked(),
         )
+
+    def set_config(self, cfg):
+        cfg = coerce_field_config(cfg)
+        self.export_cb.setChecked(cfg["export"])
+        self.section_combo.setCurrentIndex(cfg["section"])
+        self.size_radio.setCurrentIndex(cfg["size"])
+        self.bold_cb.setChecked(cfg["bold"])
+        self.label_cb.setChecked(cfg["label"])
+        self.bg_combo.setCurrentIndex(cfg["bg"])
+        self.color_combo.setCurrentIndex(cfg["color"])
+        self.align_combo.setCurrentIndex(cfg["align"])
+        self.italic_cb.setChecked(cfg["italic"])
+        self.underline_cb.setChecked(cfg["underline"])
 
 
 PAGE_SIZES = {"A4": (210, 297), "Letter": (216, 279), "A3": (297, 420), "A5": (148, 210)}
@@ -602,33 +651,6 @@ def _theme_tokens(index):
     return THEME_PRESETS[0]
 
 
-DEFAULT_SETTINGS = {
-    "theme": 0,
-    "font": 0,
-    "font_size": 13,
-    "width": 1,
-    "custom_width": 800,
-    "layout": 1,
-    "render": 0,
-    "show_title": True,
-    "card_numbers": False,
-    "zebra": False,
-    "page": 0,
-    "margins": 15,
-    "top_margin": 15,
-    "padding": 12,
-    "min_gap": 8,
-    "line_height": 1.40,
-    "max_img": 240,
-    "strip_html": False,
-    "card_style": 0,
-    "grid": False,
-    "language": "en",
-    "debug": True,
-    "high_contrast": False,
-}
-
-
 def _is_dark_mode():
     try:
         from aqt import mw
@@ -649,6 +671,150 @@ def _is_dark_mode():
     return False
 
 
+_SEARCH_ESCAPE_RE = re.compile(r'([\\"*_])')
+_FRONT_FIELD_HINTS = ("pytanie", "question", "front", "przod", "zagadnienie", "text", "tekst",
+                      "header", "image")
+
+
+def _deck_query(deck_name):
+    """Anki search for a deck (and its subdecks) with the special characters escaped."""
+    return '"deck:{}"'.format(_SEARCH_ESCAPE_RE.sub(r'\\\1', deck_name or ""))
+
+
+def _is_front_field(name):
+    low = (name or "").lower()
+    return any(k in low for k in _FRONT_FIELD_HINTS)
+
+
+def _auto_field_config(name):
+    front = _is_front_field(name)
+    return coerce_field_config({
+        "section": 0 if front else 1, "size": 2 if front else 1,
+        "bold": front, "label": not front,
+    })
+
+
+def _notetype_is_io(nt):
+    try:
+        if nt.get("originalStockKind") == 6:
+            return True
+    except AttributeError:
+        pass
+    return "image occlusion" in (nt.get("name") or "").lower()
+
+
+_MEDIA_TAG_RE = re.compile(r'\[sound:[^\]]*\]|\[anki:play:[^\]]*\]|\[\[type:[^\]]*\]\]')
+_ANSWER_HR_RE = re.compile(r'<hr\s+id=["\']?answer["\']?\s*/?>', re.IGNORECASE)
+_CLOZE_INNER_RE = re.compile(r'\{\{c(\d+)::((?:(?!\{\{c\d+::).)*?)\}\}', re.DOTALL)
+_IO_SHAPE_RE = re.compile(r'\{\{c(\d+)::image-occlusion:(\w+)((?::[^:{}]*)*)\}\}')
+_IMG_TAG_RE = re.compile(r'<img\b[^>]*>', re.IGNORECASE)
+_POINT_RE = re.compile(r'^-?\d*\.?\d+,-?\d*\.?\d+$')
+
+
+def _cloze_render(text, reveal):
+    """Resolve {{cN::answer::hint}} markers (nested ones too, innermost first).
+
+    reveal=True  -> answers shown, highlighted
+    reveal=False -> answers replaced by [hint] / [...]
+    """
+    def sub(m):
+        answer, sep, hint = m.group(2).partition("::")
+        if reveal:
+            return '<span class="cz-a">{}</span>'.format(answer)
+        return '<span class="cz-h">[{}]</span>'.format(hint if sep and hint else "...")
+
+    previous = None
+    while previous != text:
+        previous = text
+        text = _CLOZE_INNER_RE.sub(sub, text)
+    return text
+
+
+def _parse_io(fields_by_name, nt):
+    """Parse an Image Occlusion note into shapes + image + remaining fields.
+
+    Anki >= 23.10 stores masks as {{cN::image-occlusion:rect:left=..:top=..}} in the
+    Occlusion field and draws them with JavaScript, so a static export has to draw
+    them itself. Returns None when the note is not an (intact) Image Occlusion note.
+    """
+    flds = sorted(nt["flds"], key=lambda f: f["ord"])
+    occ = next((f["name"] for f in flds
+                if "image-occlusion:" in fields_by_name.get(f["name"], "")), None)
+    if occ is None:
+        return None
+    shapes = []
+    for m in _IO_SHAPE_RE.finditer(fields_by_name[occ]):
+        params = {}
+        for part in m.group(3).split(":"):
+            key, eq, val = part.partition("=")
+            if eq:
+                params[key] = val
+
+        def num(key):
+            try:
+                return float(params.get(key, "0"))
+            except ValueError:
+                return 0.0
+
+        shapes.append({
+            "ord": int(m.group(1)), "kind": m.group(2),
+            "left": num("left"), "top": num("top"),
+            "width": num("width"), "height": num("height"),
+            "points": params.get("points", ""), "oi": params.get("oi") == "1",
+        })
+    image, rest = "", []
+    for f in flds:
+        if f["name"] == occ:
+            continue
+        val = fields_by_name.get(f["name"], "")
+        if not val.strip():
+            continue
+        found = _IMG_TAG_RE.search(val) if not image else None
+        if found:
+            image = found.group(0)
+        else:
+            rest.append((f["name"], val))
+    if not image or not shapes:
+        return None
+    return {"shapes": shapes, "image": image, "rest": rest}
+
+
+def _io_polygon_points(shape):
+    pts = [p for p in shape["points"].split() if _POINT_RE.match(p)]
+    return pts
+
+
+def _io_overlay(shapes, css_class, numbered=False):
+    """Absolutely positioned shapes (coordinates are fractions of the image size)."""
+    out = []
+    for sh in shapes:
+        if sh["kind"] == "polygon":
+            pts = _io_polygon_points(sh)
+            if len(pts) < 3:
+                continue
+            out.append('<svg class="io-poly {}" viewBox="0 0 1 1" preserveAspectRatio="none">'
+                       '<polygon points="{}"/></svg>'.format(css_class, " ".join(pts)))
+            xs = [float(p.split(",")[0]) for p in pts]
+            ys = [float(p.split(",")[1]) for p in pts]
+            left, top = min(xs), min(ys)
+        else:
+            shape_cls = " io-e" if sh["kind"] == "ellipse" else ""
+            out.append('<div class="{}{}" style="left:{:.3f}%;top:{:.3f}%;width:{:.3f}%;height:{:.3f}%"></div>'
+                       .format(css_class, shape_cls, sh["left"] * 100, sh["top"] * 100,
+                               sh["width"] * 100, sh["height"] * 100))
+            left, top = sh["left"], sh["top"]
+        if numbered:
+            out.append('<span class="io-n" style="left:{:.3f}%;top:{:.3f}%">{}</span>'
+                       .format(left * 100, top * 100, sh["ord"]))
+    return "".join(out)
+
+
+def _io_figure(image_html, masks=(), outlines=()):
+    """<img> with masks drawn over it (masks hide, outlines only show where they were)."""
+    return '<div class="io-wrap">{}{}{}</div>'.format(
+        image_html, _io_overlay(masks, "io-m"), _io_overlay(outlines, "io-o", numbered=True))
+
+
 class PDFExportDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -660,8 +826,12 @@ class PDFExportDialog(QDialog):
         )
         self.page = None
         self.temp_html_path = None
+        self.temp_fallback_path = None
         self.field_widgets = []
+        self._nt_headers = []
         self._all_decks = []
+        self._loading = True  # suppress autosave while the UI is being built / restored
+        self._col_ref = mw.col if mw else None
 
         is_dark = _is_dark_mode()
         if is_dark:
@@ -828,6 +998,44 @@ class PDFExportDialog(QDialog):
                 background-color: {panel_bg};
                 background-image: qradialgradient(cx:0.5, cy:0.5, radius:0.35, fx:0.5, fy:0.5, stop:0 {accent_color}, stop:0.7 {accent_color}, stop:0.8 {panel_bg}, stop:1.0 {panel_bg});
             }}
+            QPushButton#SmallBtn, QPushButton#DangerBtn, QPushButton#FieldMoreBtn {{
+                background-color: {panel_bg};
+                border: 1px solid {border_color};
+                border-radius: 6px;
+                padding: 5px 12px;
+                color: {text_color};
+                font-size: 12px;
+                font-weight: 600;
+            }}
+            QPushButton#FieldMoreBtn {{
+                padding: 0;
+                font-size: 14px;
+            }}
+            QPushButton#DangerBtn {{
+                color: #ef4444;
+            }}
+            QPushButton#SmallBtn:hover, QPushButton#FieldMoreBtn:hover {{
+                border-color: {accent_color};
+            }}
+            QPushButton#DangerBtn:hover {{
+                border-color: #ef4444;
+            }}
+            QPushButton#SmallBtn:disabled {{
+                color: {muted_text};
+            }}
+            QLabel#NtHeader {{
+                color: {accent_color};
+                font-size: 12px;
+                font-weight: 700;
+                padding: 12px 4px 2px;
+            }}
+            QLabel#CountLabel {{
+                color: {muted_text};
+                font-size: 12px;
+            }}
+            QLabel#CountLabel[error="true"] {{
+                color: #ef4444;
+            }}
             QScrollBar:vertical {{
                 background: transparent;
                 width: 6px;
@@ -897,8 +1105,28 @@ class PDFExportDialog(QDialog):
         self.subdeck_combo = QComboBox()
         self.subdeck_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         dg.addWidget(self.subdeck_combo)
-        deck_group.setLayout(dg)
+        dg_outer = QVBoxLayout()
+        dg_outer.setSpacing(8)
+        dg_outer.addLayout(dg)
+        fr = QHBoxLayout()
+        fr.addWidget(QLabel(_t("lbl_filter")))
+        self.filter_edit = QLineEdit()
+        self.filter_edit.setPlaceholderText(_t("ph_filter"))
+        self.filter_edit.setToolTip(_t("tip_filter"))
+        self.filter_edit.setClearButtonEnabled(True)
+        fr.addWidget(self.filter_edit, 1)
+        self.count_label = QLabel("")
+        self.count_label.setObjectName("CountLabel")
+        self.count_label.setMinimumWidth(190)
+        self.count_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        fr.addWidget(self.count_label)
+        dg_outer.addLayout(fr)
+        deck_group.setLayout(dg_outer)
         root.addWidget(deck_group)
+        self._count_timer = QTimer(self)
+        self._count_timer.setSingleShot(True)
+        self._count_timer.timeout.connect(self._update_count)
+        self.filter_edit.textChanged.connect(lambda *_: self._count_timer.start(350))
 
         content_frame = QFrame()
         content_layout = QHBoxLayout(content_frame)
@@ -1029,6 +1257,43 @@ class PDFExportDialog(QDialog):
         r_cb2.addWidget(self.high_contrast_cb)
         r_cb2.addStretch()
         bl.addRow(QLabel(""), r_cb2)
+
+        self.qa_combo = NoScrollComboBox()
+        self.qa_combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.qa_combo.addItems([_t("qa_together"), _t("qa_key"), _t("qa_pages")])
+        self.qa_combo.setToolTip(_t("tip_qa"))
+        self.qa_combo.setMinimumWidth(260)
+        qa_row = QHBoxLayout()
+        qa_row.addWidget(self.qa_combo)
+        qa_row.addStretch()
+        qa_lbl = QLabel(_t("lbl_qa"))
+        qa_lbl.setToolTip(_t("tip_qa"))
+        bl.addRow(qa_lbl, qa_row)
+
+        self.cloze_combo = NoScrollComboBox()
+        self.cloze_combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.cloze_combo.addItems([_t("cloze_reveal"), _t("cloze_hide"),
+                                   _t("cloze_both"), _t("cloze_native")])
+        self.cloze_combo.setToolTip(_t("tip_cloze"))
+        self.cloze_combo.setMinimumWidth(260)
+        cz_row = QHBoxLayout()
+        cz_row.addWidget(self.cloze_combo)
+        cz_row.addStretch()
+        cz_lbl = QLabel(_t("lbl_cloze"))
+        cz_lbl.setToolTip(_t("tip_cloze"))
+        bl.addRow(cz_lbl, cz_row)
+
+        self.io_combo = NoScrollComboBox()
+        self.io_combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.io_combo.addItems([_t("io_all"), _t("io_each")])
+        self.io_combo.setToolTip(_t("tip_io"))
+        self.io_combo.setMinimumWidth(260)
+        io_row = QHBoxLayout()
+        io_row.addWidget(self.io_combo)
+        io_row.addStretch()
+        io_lbl = QLabel(_t("lbl_io"))
+        io_lbl.setToolTip(_t("tip_io"))
+        bl.addRow(io_lbl, io_row)
         self.stack.addWidget(basic)
         self.sidebar.addItem(_t("tab_basic"))
 
@@ -1088,6 +1353,14 @@ class PDFExportDialog(QDialog):
         ra.addWidget(self.strip_html_cb)
         ra.addStretch()
         avl.addRow(_t("lbl_card_style"), ra)
+
+        self.order_combo = QComboBox()
+        self.order_combo.addItems([_t("order_deck"), _t("order_created"), _t("order_shuffle")])
+        self.order_combo.setMaximumWidth(220)
+        avl.addRow(_t("lbl_order"), self.order_combo)
+
+        self.page_numbers_cb = QCheckBox(_t("cb_page_numbers"))
+        avl.addRow(QLabel(""), self.page_numbers_cb)
         self.stack.addWidget(adv)
         self.sidebar.addItem(_t("tab_advanced"))
 
@@ -1119,24 +1392,44 @@ class PDFExportDialog(QDialog):
         stl.setSpacing(16)
         stl.setContentsMargins(24, 24, 24, 24)
 
-        preset_row = QHBoxLayout()
-        self.save_settings_btn = QPushButton(_t("btn_save_settings"))
-        self.save_settings_btn.setMinimumHeight(32)
-        self.save_settings_btn.clicked.connect(self._save_settings)
-        preset_row.addWidget(self.save_settings_btn)
+        auto_lbl = QLabel(_t("settings_autosave"))
+        auto_lbl.setObjectName("HintLabel")
+        auto_lbl.setWordWrap(True)
+        stl.addWidget(auto_lbl)
 
-        self.load_settings_btn = QPushButton(_t("btn_load_settings"))
-        self.load_settings_btn.setMinimumHeight(32)
-        self.load_settings_btn.clicked.connect(self._load_settings)
-        preset_row.addWidget(self.load_settings_btn)
-
-        self.reset_btn = QPushButton(_t("btn_reset_settings"))
-        self.reset_btn.setMinimumHeight(32)
-        self.reset_btn.setStyleSheet("color: #ef4444;")
+        presets_group = QGroupBox(_t("grp_presets"))
+        pg = QVBoxLayout()
+        pg.setSpacing(10)
+        pr = QHBoxLayout()
+        self.preset_combo = QComboBox()
+        self.preset_combo.setMinimumWidth(220)
+        pr.addWidget(self.preset_combo, 1)
+        self.preset_apply_btn = QPushButton(_t("btn_preset_apply"))
+        self.preset_apply_btn.setObjectName("SmallBtn")
+        self.preset_apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.preset_apply_btn.clicked.connect(self._apply_preset)
+        pr.addWidget(self.preset_apply_btn)
+        self.preset_delete_btn = QPushButton(_t("btn_preset_delete"))
+        self.preset_delete_btn.setObjectName("DangerBtn")
+        self.preset_delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.preset_delete_btn.clicked.connect(self._delete_preset)
+        pr.addWidget(self.preset_delete_btn)
+        pg.addLayout(pr)
+        pr2 = QHBoxLayout()
+        self.preset_save_btn = QPushButton(_t("btn_preset_save"))
+        self.preset_save_btn.setObjectName("SmallBtn")
+        self.preset_save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.preset_save_btn.clicked.connect(self._save_preset)
+        pr2.addWidget(self.preset_save_btn)
+        self.reset_btn = QPushButton(_t("btn_reset_all"))
+        self.reset_btn.setObjectName("DangerBtn")
+        self.reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.reset_btn.clicked.connect(self._reset_settings)
-        preset_row.addWidget(self.reset_btn)
-        preset_row.addStretch()
-        stl.addLayout(preset_row)
+        pr2.addWidget(self.reset_btn)
+        pr2.addStretch()
+        pg.addLayout(pr2)
+        presets_group.setLayout(pg)
+        stl.addWidget(presets_group)
 
         self.settings_info = QLabel("")
         self.settings_info.setObjectName("SettingsInfoLabel")
@@ -1146,14 +1439,13 @@ class PDFExportDialog(QDialog):
 
         lang_ly = QHBoxLayout()
         lang_ly.addWidget(QLabel(_t("grp_language") + ":"))
-        self.lang_radio = InlineRadioGroup(["English", "Polski"],
-                                           default=0 if _lang == "en" else 1)
-        lang_ly.addWidget(self.lang_radio)
-        self.lang_warn = QLabel("(Requires restart)")
-        self.lang_warn.setStyleSheet("color: #ef4444; font-size: 11px; font-weight: bold; margin-left: 8px;")
-        self.lang_warn.setVisible(False)
-        lang_ly.addWidget(self.lang_warn)
-        self.lang_radio.group.idToggled.connect(lambda: self.lang_warn.setVisible(True))
+        self.lang_combo = NoScrollComboBox()
+        self.lang_combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        for code, native in LANGUAGES.items():
+            self.lang_combo.addItem(native, code)
+        self.lang_combo.setCurrentIndex(max(0, self.lang_combo.findData(_lang)))
+        self.lang_combo.setMinimumWidth(180)
+        lang_ly.addWidget(self.lang_combo)
         lang_ly.addStretch()
         stl.addLayout(lang_ly)
 
@@ -1161,7 +1453,8 @@ class PDFExportDialog(QDialog):
         self.debug_cb = QCheckBox(_t("cb_debug"))
         dbg_ly.addWidget(self.debug_cb)
         self.log_btn = QPushButton(_t("btn_logs"))
-        self.log_btn.setMinimumHeight(30)
+        self.log_btn.setObjectName("SmallBtn")
+        self.log_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.log_btn.setVisible(False)
         self.log_btn.clicked.connect(self._show_logs)
         dbg_ly.addWidget(self.log_btn)
@@ -1290,10 +1583,19 @@ class PDFExportDialog(QDialog):
         self.setLayout(root)
         self._create_busy_overlay()
 
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.timeout.connect(self._flush_save)
+        self._apply_settings(_store.settings)
+        self._refresh_presets()
         self._populate_decks()
         self.deck_combo.currentIndexChanged.connect(self._on_deck_changed)
         self.subdeck_combo.currentIndexChanged.connect(self._on_subdeck_changed)
-        self._try_autoload_settings()
+        self._connect_autosave()
+        geo = _store.get_geometry()
+        if geo:
+            self.restoreGeometry(geo)
+        self._loading = False
 
     def _create_busy_overlay(self):
         is_dark = _is_dark_mode()
@@ -1416,8 +1718,25 @@ class PDFExportDialog(QDialog):
             self.sidebar.setCurrentRow(0)
 
     # ------------------------------------------------------------------ decks
-    def _populate_decks(self):
-        self._all_decks = sorted(mw.col.decks.all_names_and_ids(), key=lambda d: d.name)
+    def select_deck(self, name):
+        """Reload the deck list and select `name` (a full deck path)."""
+        was_loading = self._loading
+        self._loading = True
+        try:
+            self._populate_decks(preferred=name)
+        finally:
+            self._loading = was_loading
+
+    def refresh_collection(self):
+        """Re-read the deck list when the window is shown again; keeps the selection."""
+        self.select_deck(self._sel())
+
+    def _populate_decks(self, preferred=None):
+        try:
+            self._all_decks = sorted(mw.col.decks.all_names_and_ids(), key=lambda d: d.name)
+        except Exception as e:
+            logger.error("Deck list load failed", e)
+            self._all_decks = []
         top = {}
         for d in self._all_decks:
             rn = d.name.split("::")[0]
@@ -1428,16 +1747,26 @@ class PDFExportDialog(QDialog):
         for n in sorted(top.keys()):
             self.deck_combo.addItem(n, top[n])
         self.deck_combo.blockSignals(False)
-        cur = mw.col.decks.current()
-        if cur:
-            i = self.deck_combo.findText(cur["name"].split("::")[0])
+        target = preferred
+        if not target:
+            try:
+                cur = mw.col.decks.current()
+                target = cur["name"] if cur else None
+            except Exception:
+                target = None
+        if target:
+            i = self.deck_combo.findText(target.split("::")[0])
             if i >= 0:
                 self.deck_combo.setCurrentIndex(i)
+        self._want_sub = target
         self._on_deck_changed()
 
-    def _on_deck_changed(self):
+    def _on_deck_changed(self, *_):
         rn = self.deck_combo.currentText()
         if not rn:
+            self.subdeck_combo.clear()
+            self._load_fields()
+            self._update_count()
             return
         self.subdeck_combo.blockSignals(True)
         self.subdeck_combo.clear()
@@ -1453,9 +1782,16 @@ class PDFExportDialog(QDialog):
                     display = parts[0]
                 self.subdeck_combo.addItem(display, d.name)
         self.subdeck_combo.blockSignals(False)
-        cur = mw.col.decks.current()
-        if cur and cur["name"].startswith(pfx):
-            i = self.subdeck_combo.findData(cur["name"])
+        want = getattr(self, "_want_sub", None)
+        self._want_sub = None
+        if want is None:
+            try:
+                cur = mw.col.decks.current()
+                want = cur["name"] if cur else None
+            except Exception:
+                want = None
+        if want and want.startswith(pfx):
+            i = self.subdeck_combo.findData(want)
             if i >= 0:
                 self.subdeck_combo.setCurrentIndex(i)
         self._on_subdeck_changed()
@@ -1464,46 +1800,144 @@ class PDFExportDialog(QDialog):
         d = self.subdeck_combo.currentData()
         return d if d else self.deck_combo.currentText()
 
-    def _on_subdeck_changed(self):
+    def _on_subdeck_changed(self, *_):
         self._load_fields()
+        self._update_count()
 
-    def _load_fields(self):
-        for w in self.field_widgets:
+    # -------------------------------------------------------------- searching
+    def _search_query(self, dn=None):
+        query = _deck_query(dn or self._sel())
+        extra = self.filter_edit.text().strip()
+        return "{} ({})".format(query, extra) if extra else query
+
+    def _find_card_ids(self, dn=None):
+        ids = list(mw.col.find_cards(self._search_query(dn)))
+        order = self.order_combo.currentIndex()
+        if order == 1:
+            ids.sort()  # card ids are creation timestamps
+        elif order == 2:
+            random.shuffle(ids)
+        return ids
+
+    def _update_count(self):
+        dn = self._sel()
+        if not dn:
+            self._set_count("", False)
+            return
+        try:
+            query = self._search_query(dn)
+            cards = len(mw.col.find_cards(query))
+            notes = len(mw.col.find_notes(query))
+        except Exception as e:
+            self.count_label.setToolTip(str(e))
+            self._set_count(_t("deck_count_err"), True)
+            return
+        self.count_label.setToolTip("")
+        self._set_count(
+            _t("deck_count").format(cards=cards, notes=notes) if cards else _t("deck_count_none"),
+            False)
+
+    def _set_count(self, text, error):
+        self.count_label.setText(text)
+        self.count_label.setProperty("error", bool(error))
+        self.count_label.style().unpolish(self.count_label)
+        self.count_label.style().polish(self.count_label)
+
+    def _precheck(self):
+        """Validate the selection before an export; shows a warning and returns False on problems."""
+        dn = self._sel()
+        if not dn:
+            showWarning(_t("msg_no_cards"))
+            return False
+        try:
+            found = mw.col.find_cards(self._search_query(dn))
+        except Exception as e:
+            showWarning(_t("msg_bad_search").format(e))
+            return False
+        if not found:
+            showWarning(_t("msg_no_cards"))
+            return False
+        return True
+
+    # ----------------------------------------------------------------- fields
+    def _clear_field_widgets(self):
+        for w in self.field_widgets + self._nt_headers:
             w.setParent(None)
             w.deleteLater()
         self.field_widgets.clear()
+        self._nt_headers.clear()
+
+    def _load_fields(self):
+        """Rebuild the Fields tab: one group per note type used by the selected deck.
+
+        Each field starts from the config remembered for its note type, so switching decks
+        (or reopening the window) never loses per-note-type settings.
+        """
+        self._clear_field_widgets()
         dn = self._sel()
         if not dn:
             return
-        cids = mw.col.find_cards('"deck:{}"'.format(dn))
-        if not cids:
+        counts = {}
+        try:
+            nids = mw.col.find_notes(_deck_query(dn))
+            chunk = 500
+            for i in range(0, len(nids), chunk):
+                ids = ",".join(str(n) for n in nids[i:i + chunk])
+                for mid, cnt in mw.col.db.all(
+                        "SELECT mid, count() FROM notes WHERE id IN ({}) GROUP BY mid".format(ids)):
+                    counts[mid] = counts.get(mid, 0) + cnt
+        except Exception as e:
+            logger.error("Field scan failed for deck {}".format(dn), e)
             return
-        chunk = 500
-        nids = set()
-        for i in range(0, len(cids), chunk):
-            s = ",".join(str(c) for c in cids[i:i + chunk])
-            nids.update(mw.col.db.list("SELECT nid FROM cards WHERE id IN ({})".format(s)))
-        mids = set()
-        nl = list(nids)
-        for i in range(0, len(nl), chunk):
-            s = ",".join(str(n) for n in nl[i:i + chunk])
-            mids.update(mw.col.db.list("SELECT mid FROM notes WHERE id IN ({})".format(s)))
-        ordered = []
-        seen = set()
-        for mid in mids:
-            m = mw.col.models.get(mid)
-            if m:
-                for f in m["flds"]:
-                    if f["name"] not in seen:
-                        ordered.append((f["ord"], f["name"]))
-                        seen.add(f["name"])
-        ordered.sort(key=lambda x: x[0])
-        kw = ["pytanie", "question", "front", "przod", "zagadnienie", "text", "tekst", "header", "image"]
-        for _, fn in ordered:
-            is_f = any(k in fn.lower() for k in kw)
-            w = FieldConfigWidget(fn, is_front=is_f)
+        for mid, cnt in sorted(counts.items(), key=lambda kv: -kv[1]):
+            nt = mw.col.models.get(mid)
+            if not nt:
+                continue
+            self._add_note_type_group(nt, cnt)
+
+    def _add_note_type_group(self, nt, note_count):
+        header = QWidget()
+        hl = QHBoxLayout(header)
+        hl.setContentsMargins(0, 0, 0, 0)
+        title = QLabel(_t("nt_header").format(name=nt["name"], n=note_count))
+        title.setObjectName("NtHeader")
+        title.setTextFormat(Qt.TextFormat.PlainText)
+        hl.addWidget(title)
+        hl.addStretch()
+        if not _notetype_is_io(nt):
+            reset = QPushButton(_t("nt_reset"))
+            reset.setObjectName("SmallBtn")
+            reset.setCursor(Qt.CursorShape.PointingHandCursor)
+            reset.clicked.connect(lambda _=False, n=nt["name"]: self._reset_note_type(n))
+            hl.addWidget(reset)
+        self.fields_layout.insertWidget(self.fields_layout.count() - 1, header)
+        self._nt_headers.append(header)
+        if _notetype_is_io(nt):
+            note = QLabel(_t("nt_io_auto"))
+            note.setObjectName("HintLabel")
+            note.setWordWrap(True)
+            self.fields_layout.insertWidget(self.fields_layout.count() - 1, note)
+            self._nt_headers.append(note)
+            return
+        saved = _store.get_fields(nt["name"])
+        for fld in sorted(nt["flds"], key=lambda f: f["ord"]):
+            w = FieldConfigWidget(
+                fld["name"], is_front=_is_front_field(fld["name"]),
+                nt_id=nt["id"], nt_name=nt["name"], config=saved.get(fld["name"]))
+            w.changed.connect(lambda w=w: self._on_field_changed(w))
             self.fields_layout.insertWidget(self.fields_layout.count() - 1, w)
             self.field_widgets.append(w)
+
+    def _on_field_changed(self, w):
+        if self._loading:
+            return
+        _store.set_field(w.nt_name, w.field_name, w.get_config())
+        self._schedule_save()
+
+    def _reset_note_type(self, nt_name):
+        _store.reset_fields(nt_name)
+        self._schedule_save()
+        self._load_fields()
 
     # ------------------------------------------------------------------ logs
     def _show_logs(self):
@@ -1604,6 +2038,7 @@ class PDFExportDialog(QDialog):
         for candidate in [
             os.environ.get("ANKI_PDFFER_PYTHON"),
             "/opt/homebrew/opt/python@3.14/bin/python3.14",
+            shutil.which("python3.14"),
             "/opt/homebrew/bin/python3",
             "/usr/local/bin/python3",
             shutil.which("python3"),
@@ -1728,7 +2163,8 @@ class PDFExportDialog(QDialog):
 
         candidates = ", ".join(info["families"]) if info["families"] else "(none)"
         logger.log("Font candidates [{}]: {}".format(mode, candidates))
-        logger.log("Font import [{}]: Google Inter CSS included".format(mode))
+        logger.log("Font import [{}]: Google Inter CSS {}".format(
+            mode, "included" if "'Inter'" in info["stack"] else "skipped"))
         for match in self._qt_font_debug_matches(info["families"]):
             logger.log("Qt font [{}]: {}".format(mode, match))
 
@@ -1933,6 +2369,8 @@ class PDFExportDialog(QDialog):
 
     # ------------------------------------------------------------------ actions
     def _on_legacy(self):
+        if not self._precheck():
+            return
         try:
             self._begin_busy(_t("busy_legacy"))
             logger.start("Legacy")
@@ -1958,6 +2396,8 @@ class PDFExportDialog(QDialog):
             self._end_busy(force=True)
 
     def _on_preview(self):
+        if not self._precheck():
+            return
         try:
             self._begin_busy(_t("busy_preview"))
             logger.start("Preview")
@@ -1983,6 +2423,8 @@ class PDFExportDialog(QDialog):
             self._end_busy(force=True)
 
     def _on_export(self):
+        if not self._precheck():
+            return
         dn = self._sel()
         short = self._safe_filename(dn.split("::")[-1] if "::" in dn else dn)
         uid = str(uuid.uuid4()).split('-')[0][:6]
@@ -2339,11 +2781,14 @@ class PDFExportDialog(QDialog):
         logger.finish()
         self._save_debug_log()
         self._reset()
-        if self.temp_html_path:
-            try:
-                os.remove(self.temp_html_path)
-            except OSError:
-                pass
+        for attr in ("temp_html_path", "temp_fallback_path"):
+            tmp = getattr(self, attr, None)
+            if tmp:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+                setattr(self, attr, None)
         if success:
             QDesktopServices.openUrl(QUrl.fromLocalFile(path))
             self._bring_to_front()
@@ -2366,16 +2811,13 @@ class PDFExportDialog(QDialog):
         self._end_busy(force=True)
 
     def _collect_fc(self):
+        """{note type id: {field name: config}} for the widgets currently shown."""
         fc = {}
         for w in self.field_widgets:
-            fc[w.field_name] = w.get_config()
+            fc.setdefault(w.nt_id, {})[w.field_name] = w.get_config()
         return fc
 
     # ------------------------------------------------------------------ settings
-    @staticmethod
-    def _settings_path():
-        return os.path.join(os.path.dirname(__file__), "settings.json")
-
     def _get_all_settings(self):
         return {
             "theme": self.theme_radio.currentIndex(),
@@ -2398,80 +2840,178 @@ class PDFExportDialog(QDialog):
             "strip_html": self.strip_html_cb.isChecked(),
             "card_style": self.card_style_combo.currentIndex(),
             "grid": self.grid_cb.isChecked(),
-            "language": "en" if self.lang_radio.currentIndex() == 0 else "pl",
+            "language": self.lang_combo.currentData() or "en",
             "debug": self.debug_cb.isChecked(),
             "high_contrast": self.high_contrast_cb.isChecked(),
+            "qa_layout": self.qa_combo.currentIndex(),
+            "cloze_mode": self.cloze_combo.currentIndex(),
+            "io_mode": self.io_combo.currentIndex(),
+            "order": self.order_combo.currentIndex(),
+            "page_numbers": self.page_numbers_cb.isChecked(),
         }
 
+    @staticmethod
+    def _set_combo(combo, idx):
+        if 0 <= idx < combo.count():
+            combo.setCurrentIndex(idx)
+
     def _apply_settings(self, s):
-        self.theme_radio.setCurrentIndex(s.get("theme", DEFAULT_SETTINGS["theme"]))
-        self.font_combo.setCurrentIndex(s.get("font", DEFAULT_SETTINGS["font"]))
-        self.fontsize_spin.setValue(s.get("font_size", DEFAULT_SETTINGS["font_size"]))
-        self.width_radio.setCurrentIndex(s.get("width", DEFAULT_SETTINGS["width"]))
-        self.width_spin.setValue(s.get("custom_width", DEFAULT_SETTINGS["custom_width"]))
-        self.layout_radio.setCurrentIndex(s.get("layout", DEFAULT_SETTINGS["layout"]))
-        self.render_radio.setCurrentIndex(s.get("render", DEFAULT_SETTINGS["render"]))
-        self.show_title_cb.setChecked(s.get("show_title", DEFAULT_SETTINGS["show_title"]))
-        self.card_numbers_cb.setChecked(s.get("card_numbers", DEFAULT_SETTINGS["card_numbers"]))
-        self.zebra_cb.setChecked(s.get("zebra", DEFAULT_SETTINGS["zebra"]))
-        self.page_combo.setCurrentIndex(s.get("page", DEFAULT_SETTINGS["page"]))
-        self.margin_spin.setValue(s.get("margins", DEFAULT_SETTINGS["margins"]))
-        self.top_margin_spin.setValue(s.get("top_margin", DEFAULT_SETTINGS["top_margin"]))
-        self.padding_spin.setValue(s.get("padding", DEFAULT_SETTINGS["padding"]))
-        self.gap_spin.setValue(s.get("min_gap", DEFAULT_SETTINGS["min_gap"]))
-        self.lh_spin.setValue(s.get("line_height", DEFAULT_SETTINGS["line_height"]))
-        self.img_h_spin.setValue(s.get("max_img", DEFAULT_SETTINGS["max_img"]))
-        self.strip_html_cb.setChecked(s.get("strip_html", DEFAULT_SETTINGS["strip_html"]))
-        self.card_style_combo.setCurrentIndex(s.get("card_style", DEFAULT_SETTINGS["card_style"]))
-        self.grid_cb.setChecked(s.get("grid", DEFAULT_SETTINGS["grid"]))
-        self.lang_radio.setCurrentIndex(0 if s.get("language", DEFAULT_SETTINGS["language"]) == "en" else 1)
-        self.debug_cb.setChecked(s.get("debug", DEFAULT_SETTINGS["debug"]))
-        self.high_contrast_cb.setChecked(s.get("high_contrast", DEFAULT_SETTINGS["high_contrast"]))
-
-    def _save_settings(self):
+        """Push a settings dict into the widgets (autosave stays off while doing so)."""
+        s = coerce_settings(s)
+        was_loading = self._loading
+        self._loading = True
         try:
-            s = self._get_all_settings()
-            with open(self._settings_path(), "w", encoding="utf-8") as f:
-                json.dump(s, f, indent=2, ensure_ascii=False)
-            self.settings_info.setText(_t("msg_settings_saved").format(self._settings_path()))
-            self.settings_info.setVisible(True)
-        except Exception as e:
-            showWarning(_t("msg_settings_err").format(e))
+            self.theme_radio.setCurrentIndex(s["theme"])
+            self._set_combo(self.font_combo, s["font"])
+            self.fontsize_spin.setValue(s["font_size"])
+            self.width_radio.setCurrentIndex(s["width"])
+            self.width_spin.setValue(s["custom_width"])
+            self.layout_radio.setCurrentIndex(s["layout"])
+            self.render_radio.setCurrentIndex(s["render"])
+            self.show_title_cb.setChecked(s["show_title"])
+            self.card_numbers_cb.setChecked(s["card_numbers"])
+            self.zebra_cb.setChecked(s["zebra"])
+            self._set_combo(self.page_combo, s["page"])
+            self.margin_spin.setValue(s["margins"])
+            self.top_margin_spin.setValue(s["top_margin"])
+            self.padding_spin.setValue(s["padding"])
+            self.gap_spin.setValue(s["min_gap"])
+            self.lh_spin.setValue(s["line_height"])
+            self.img_h_spin.setValue(s["max_img"])
+            self.strip_html_cb.setChecked(s["strip_html"])
+            self._set_combo(self.card_style_combo, s["card_style"])
+            self.grid_cb.setChecked(s["grid"])
+            self.debug_cb.setChecked(s["debug"])
+            self.high_contrast_cb.setChecked(s["high_contrast"])
+            self._set_combo(self.qa_combo, s["qa_layout"])
+            self._set_combo(self.cloze_combo, s["cloze_mode"])
+            self._set_combo(self.io_combo, s["io_mode"])
+            self._set_combo(self.order_combo, s["order"])
+            self.page_numbers_cb.setChecked(s["page_numbers"])
+            self.lang_combo.blockSignals(True)
+            self._set_combo(self.lang_combo, self.lang_combo.findData(s["language"]))
+            self.lang_combo.blockSignals(False)
+            self.log_btn.setVisible(self.debug_cb.isChecked())
+        finally:
+            self._loading = was_loading
 
-    def _load_settings(self):
-        p = self._settings_path()
-        if not os.path.exists(p):
-            showInfo(_t("msg_no_settings"))
+    def _connect_autosave(self):
+        sched = self._schedule_save
+        for rg in (self.theme_radio, self.width_radio, self.layout_radio, self.render_radio):
+            rg.group.idToggled.connect(sched)
+        for cb in (self.show_title_cb, self.card_numbers_cb, self.zebra_cb, self.high_contrast_cb,
+                   self.strip_html_cb, self.grid_cb, self.debug_cb, self.page_numbers_cb):
+            cb.toggled.connect(sched)
+        for sp in (self.fontsize_spin, self.width_spin, self.margin_spin, self.top_margin_spin,
+                   self.padding_spin, self.gap_spin, self.lh_spin, self.img_h_spin):
+            sp.valueChanged.connect(sched)
+        for combo in (self.font_combo, self.page_combo, self.card_style_combo, self.qa_combo,
+                      self.cloze_combo, self.io_combo, self.order_combo):
+            combo.currentIndexChanged.connect(sched)
+        self.order_combo.currentIndexChanged.connect(lambda *_: None)
+        self.lang_combo.currentIndexChanged.connect(self._on_language_changed)
+
+    def _schedule_save(self, *_):
+        if not self._loading:
+            self._save_timer.start(400)
+
+    def _flush_save(self):
+        """Write the current UI state (options, remembered fields, window size) to disk."""
+        self._save_timer.stop()
+        if self._loading:
             return
+        _store.update_settings(self._get_all_settings())
         try:
-            with open(p, "r", encoding="utf-8") as f:
-                s = json.load(f)
-            self._apply_settings(s)
-            self.settings_info.setText(_t("msg_settings_loaded"))
-            self.settings_info.setVisible(True)
-        except Exception as e:
-            showWarning(_t("msg_settings_load_err").format(e))
+            _store.set_geometry(self.saveGeometry())
+        except Exception:
+            pass
+        err = _store.save()
+        if err:
+            logger.log("Settings save failed: {}".format(err))
 
-    def _try_autoload_settings(self):
-        p = self._settings_path()
-        if os.path.exists(p):
-            try:
-                with open(p, "r", encoding="utf-8") as f:
-                    s = json.load(f)
-                self._apply_settings(s)
-            except Exception:
-                pass
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._flush_save()
+
+    def closeEvent(self, event):
+        self._flush_save()
+        super().closeEvent(event)
+
+    def _on_language_changed(self, *_):
+        if self._loading:
+            return
+        code = self.lang_combo.currentData() or "en"
+        _store.update_settings({"language": code})
+        self._flush_save()
+        _set_language(code)
+        QTimer.singleShot(0, _rebuild_dialog)
+
+    def _info(self, text):
+        self.settings_info.setText(text)
+        self.settings_info.setVisible(True)
+
+    # ------------------------------------------------------------------ presets
+    def _refresh_presets(self, select=None):
+        names = _store.preset_names()
+        self.preset_combo.blockSignals(True)
+        self.preset_combo.clear()
+        if names:
+            self.preset_combo.addItems(names)
+            if select in names:
+                self.preset_combo.setCurrentIndex(names.index(select))
+        else:
+            self.preset_combo.addItem(_t("preset_none"))
+        self.preset_combo.blockSignals(False)
+        for btn in (self.preset_apply_btn, self.preset_delete_btn):
+            btn.setEnabled(bool(names))
+        self.preset_combo.setEnabled(bool(names))
+
+    def _selected_preset(self):
+        return self.preset_combo.currentText() if _store.presets else None
+
+    def _save_preset(self):
+        self._loading = False
+        self._flush_save()
+        name, ok = QInputDialog.getText(self, _t("grp_presets"), _t("preset_prompt"))
+        name = (name or "").strip()
+        if not ok or not name:
+            return
+        if name in _store.presets and not askUser(_t("msg_preset_overwrite").format(name), parent=self):
+            return
+        _store.save_preset(name)
+        _store.save()
+        self._refresh_presets(select=name)
+        self._info(_t("msg_preset_saved").format(name))
+
+    def _apply_preset(self):
+        name = self._selected_preset()
+        if not name or not _store.apply_preset(name):
+            return
+        self._apply_settings(_store.settings)
+        self._load_fields()
+        self._update_count()
+        _store.save()
+        self._info(_t("msg_preset_applied").format(name))
+
+    def _delete_preset(self):
+        name = self._selected_preset()
+        if not name or not askUser(_t("msg_preset_delete").format(name), parent=self):
+            return
+        _store.delete_preset(name)
+        _store.save()
+        self._refresh_presets()
+        self._info(_t("msg_preset_deleted").format(name))
 
     def _reset_settings(self):
-        self._apply_settings(DEFAULT_SETTINGS)
-        p = self._settings_path()
-        if os.path.exists(p):
-            try:
-                os.remove(p)
-            except OSError:
-                pass
-        self.settings_info.setText(_t("msg_settings_reset"))
-        self.settings_info.setVisible(True)
+        if not askUser(_t("msg_reset_confirm"), parent=self):
+            return
+        _store.reset_settings()
+        _store.reset_fields()
+        self._apply_settings(_store.settings)
+        self._load_fields()
+        self._update_count()
+        _store.save()
+        self._info(_t("msg_settings_reset"))
 
     # ================================================================== HTML
     def _build_html(self, mode="pdf"):
@@ -2537,6 +3077,19 @@ class PDFExportDialog(QDialog):
         else:
             content_max_w_css = ""
 
+        font_import = (
+            "@import url('https://fonts.googleapis.com/css2?"
+            "family=Inter:wght@400;500;600;700;800&display=swap');"
+            if "'Inter'" in font else ""
+        )
+        page_numbers = self.page_numbers_cb.isChecked() and mode == "pdf"
+        bottom_mm = max(top_mg, 12) if page_numbers else top_mg
+        page_num_css = (
+            "@bottom-center{{content:counter(page) ' / ' counter(pages);"
+            "font-family:{f};font-size:9px;color:{c}}}".format(f=font, c=t["mut"])
+            if page_numbers else ""
+        )
+
         sanitise_css = (
             ".fv [style*='background']{background:transparent!important}"
             ".fv [style*='Background']{background:transparent!important}"
@@ -2554,12 +3107,28 @@ class PDFExportDialog(QDialog):
             ".rs [style*='color:#fff']{color:inherit!important}"
         )
 
+        io_max_h = int(max(200, (page_h_px - top_mg_px * 2) * 0.62))
+        cz_color = ["#2563eb", "#60a5fa", "#1d4ed8"][theme_idx if 0 <= theme_idx < 3 else 0]
         io_css_str = (
             ".io-wrap{position:relative;display:inline-block;line-height:0;max-width:100%}"
             ".io-wrap img{display:block;max-width:100%!important;height:auto!important;"
-            "max-height:none!important;border-radius:0}"
-            ".io-wrap svg{position:absolute;top:0;left:0;"
+            "width:auto!important;max-height:" + str(io_max_h) + "px!important;border-radius:0;margin:0}"
+            ".io-wrap svg{position:absolute;top:0;left:0;margin:0!important;"
             "width:100%!important;height:100%!important}"
+            ".rs .io-m{display:block;position:absolute;background:#ffeba2;border:1.5px solid #212121;"
+            "box-sizing:border-box}"
+            ".rs .io-o{display:block;position:absolute;border:2px dashed #e0482c;box-sizing:border-box}"
+            ".rs .io-e{border-radius:50%}"
+            ".rs .io-n{position:absolute;background:#e0482c;color:#fff!important;"
+            "font-size:10px;font-weight:700;line-height:1;padding:2px 4px;border-radius:3px}"
+            ".io-poly.io-m polygon{fill:#ffeba2;stroke:#212121;stroke-width:.006}"
+            ".io-poly.io-o polygon{fill:none;stroke:#e0482c;stroke-width:.008;"
+            "stroke-dasharray:.03 .02}"
+            ".cz-a{font-weight:700;color:" + cz_color + ";border-bottom:1.5px solid " + cz_color + "}"
+            ".cz-h{display:inline-block;min-width:3.2em;text-align:center;font-weight:700;"
+            "color:" + cz_color + ";border-bottom:1.5px solid " + cz_color + ";line-height:1.1}"
+            ".key-title{text-align:center;font-size:" + str(bsz + 6) + "px;font-weight:800;"
+            "color:" + t["acc"] + ";margin:8px 0 12px;letter-spacing:-.02em}"
         )
         if high_contrast:
             _c = t["txt"]
@@ -2596,8 +3165,7 @@ class PDFExportDialog(QDialog):
         top_notice_gap = max(16, min_gap * 2)
 
         content_css = (
-            "@import url('https://fonts.googleapis.com/css2?"
-            "family=Inter:wght@400;500;600;700;800&display=swap');"
+            "{font_import}"
             "*,*::before,*::after{{font-family:{font}!important;box-sizing:border-box!important;"
             "-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}}"
             "html{{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}}"
@@ -2660,7 +3228,7 @@ class PDFExportDialog(QDialog):
             "{io_css}"
             "{hc_css}"
         ).format(
-            font=font, txt=t["txt"], bsz=bsz, lh=lh,
+            font_import=font_import, font=font, txt=t["txt"], bsz=bsz, lh=lh,
             h1sz=bsz + 8, acc=t["acc"], mut=t["mut"], titlegap=title_gap,
             subsz=bsz - 2, subgap=min_gap + 2,
             card_extra=card_extra, card=t["card"], gap=css_gap,
@@ -2678,7 +3246,8 @@ class PDFExportDialog(QDialog):
 
         if mode == "pdf":
             wrapper_css = (
-                "@page{{size:{ps};margin:{top_mm:.2f}mm {mg_mm:.2f}mm {top_mm:.2f}mm {mg_mm:.2f}mm;background:{bg}}}"
+                "@page{{size:{ps};margin:{top_mm:.2f}mm {mg_mm:.2f}mm {bot_mm:.2f}mm {mg_mm:.2f}mm;"
+                "background:{bg};{pnum}}}"
                 "{content}"
                 "html{{background-color:{bg}!important;min-height:100%;"
                 "-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}}"
@@ -2687,12 +3256,12 @@ class PDFExportDialog(QDialog):
                 ".pdf-bg{{position:fixed;top:0;left:0;right:0;bottom:0;background:{bg};"
                 "z-index:0;-webkit-print-color-adjust:exact!important;"
                 "print-color-adjust:exact!important}}"
-                ".page-break{{display:block;height:0;margin:0;padding:0;"
+                "div.page-break{{display:block!important;height:0;margin:0;padding:0;"
                 "break-before:page;page-break-before:always}}"
                 ".page-content{{position:relative;z-index:1;display:flow-root}}"
                 "h1.doc-title{{margin-top:0}}"
             ).format(ps=ps, content=content_css, bg=t["body"],
-                     top_mm=top_mg, mg_mm=mg)
+                     top_mm=top_mg, mg_mm=mg, bot_mm=bottom_mm, pnum=page_num_css)
 
         elif mode == "pdf_fallback":
             wrapper_css = (
@@ -2856,7 +3425,7 @@ class PDFExportDialog(QDialog):
             if show_tool_notice:
                 html.append(build_tool_top_notice())
 
-        card_ids = mw.col.find_cards('"deck:{}"'.format(deck_name))
+        card_ids = self._find_card_ids(deck_name)
         logger.log("Kart: {}".format(len(card_ids)))
 
         img_ok = [0]
@@ -2926,6 +3495,7 @@ class PDFExportDialog(QDialog):
         def sanitise_html(raw):
             if not raw:
                 return raw
+            raw = _MEDIA_TAG_RE.sub("", raw)
             raw, svgs = _protect_svg(raw)
             raw = re.sub(r"<style[^>]*>.*?</style>", "", raw, flags=re.DOTALL | re.IGNORECASE)
             raw = re.sub(r"<script[^>]*>.*?</script>", "", raw, flags=re.DOTALL | re.IGNORECASE)
@@ -2993,7 +3563,7 @@ class PDFExportDialog(QDialog):
         def render_field(fname, val, conf):
             if not val:
                 return ""
-            label = '<div class="fl">{}</div>'.format(fname) if conf["label"] else ""
+            label = '<div class="fl">{}</div>'.format(html_module.escape(fname)) if conf["label"] else ""
             return '<div class="fb" style="{}"><div class="fv">{}{}</div></div>'.format(
                 fstyle(conf), label, val)
 
@@ -3059,7 +3629,8 @@ class PDFExportDialog(QDialog):
             return sum(len(line) for line in lines), hard_lines
 
         # ---- FIX: improved card height estimation ----
-        def estimate_card_h(sections_count, has_image, text_chars=0, n_images=1, hard_lines=0):
+        def estimate_card_h(sections_count, has_image, text_chars=0, n_images=1, hard_lines=0,
+                            img_px=None):
             overhead = (20 if show_nums else 0) + sections_count * (padh * 2 + 2) + max(0, sections_count - 1)
             effective_w = card_max_w if card_max_w > 0 else (pw_mm * ppm - 2 * mg_px)
             cpp = max(10, int((effective_w - pad * 2) / (bsz * 0.6)))
@@ -3068,7 +3639,7 @@ class PDFExportDialog(QDialog):
             else:
                 n_lines = sections_count * 2
             text_h = n_lines * bsz * lh
-            img_est = min(n_images, 5) * min(img_h, 200) if has_image else 0
+            img_est = min(n_images, 5) * (img_px or min(img_h, 200)) if has_image else 0
             return int(overhead + text_h + img_est + 4)
 
         def card_class(est):
@@ -3076,186 +3647,295 @@ class PDFExportDialog(QDialog):
                 return "card long-card"
             return "card"
 
-        def pack_compact_pages(items):
-            pages = []
-            current_page = []
-            used_h = title_h_est
+        # ------------------------------------------------------------ entries
+        qa_layout = self.qa_combo.currentIndex()
+        cloze_mode = self.cloze_combo.currentIndex()   # 0 reveal 1 hide 2 both 3 native
+        io_each = self.io_combo.currentIndex() == 1
+        cards_style = render_mode == 1
+        show_cnum = show_nums or qa_layout != 0
+        io_img_est = int(min(io_max_h, 320))
 
-            for item in sorted(items, key=lambda c: c[0]):
-                _, est, _ = item
-                needed_h = est + (card_gap if current_page else 0)
-                if current_page and used_h + needed_h > break_h_px:
-                    pages.append(current_page)
-                    current_page = [item]
-                    used_h = est
-                else:
-                    current_page.append(item)
-                    used_h += needed_h
-
-            if current_page:
-                pages.append(current_page)
-
-            return pages
-
+        entries = []
+        seen = set()
         cards_ok = 0
         cards_skip = 0
-        card_items = []
+        model_cache = {}
 
-        if render_mode == 1:
-            for idx, cid in enumerate(card_ids):
-                try:
-                    card = mw.col.get_card(cid)
-                    note = card.note()
-                    nt_name = note.note_type()["name"]
-                    q = proc_media(clean_rendered(card.question()))
-                    a = proc_media(clean_rendered(card.answer()))
-                    if "image occlusion" in nt_name.lower():
-                        if q:
-                            q = '<div class="io-wrap">{}</div>'.format(q)
-                        if a:
-                            a = '<div class="io-wrap">{}</div>'.format(a)
-                    if not q and not a:
-                        cards_skip += 1
-                        continue
+        def get_model(note):
+            nt = model_cache.get(note.mid)
+            if nt is None:
+                nt = mw.col.models.get(note.mid)
+                model_cache[note.mid] = nt
+            return nt
 
-                    sec_count = (1 if q else 0) + (1 if a else 0)
-                    has_img = "base64" in (q or '') or "base64" in (a or '')
-                    n_imgs = max(1, (q or '').count('base64') + (a or '').count('base64')) if has_img else 0
-                    text_chars, hard_lines = _text_metrics((q or '') + (a or ''))
-                    est = estimate_card_h(sec_count, has_img, text_chars, n_imgs, hard_lines)
+        def est_html(markup, img_px=None):
+            sec_count = max(1, len(re.findall(r'class="sec-[qax]"', markup)))
+            chars, lines = _text_metrics(markup)
+            n_imgs = markup.count("<img")
+            return estimate_card_h(sec_count, n_imgs > 0, chars, max(1, n_imgs), lines, img_px)
 
-                    alt = ' style="background:{}"'.format(t["alt"]) if zebra and idx % 2 == 1 else ""
-                    parts = ['<div class="{}"{}>'.format(card_class(est), alt)]
-                    if show_nums:
-                        parts.append('<div class="cnum">#{} &middot; {}</div>'.format(idx + 1, nt_name))
-                    if q:
-                        parts.append(
-                            '<div class="sec-q"><div class="rs">'
-                            '<div class="label">{}</div>{}</div></div>'.format(_t("rendered_front"), q))
-                    if q and a:
-                        parts.append('<hr class="sec-div">')
-                    if a:
-                        parts.append(
-                            '<div class="sec-a"><div class="rs">'
-                            '<div class="label">{}</div>{}</div></div>'.format(
-                                _t("rendered_back"), a))
-                    parts.append("</div>")
+        def rs_section(css, label_key, body):
+            return ('<div class="{}"><div class="rs"><div class="label">{}</div>{}</div></div>'
+                    .format(css, html_module.escape(_t(label_key)), body))
 
-                    if compact and mode in ("preview", "pdf_fallback"):
-                        card_items.append((idx, est, parts))
+        def add_entry(nt_name, q_html, a_html, img_px=None):
+            if not q_html and not a_html:
+                return False
+            num = len(entries) + 1
+            both = q_html + a_html
+            entries.append({
+                "num": num, "nt": nt_name, "q": q_html, "a": a_html,
+                "est": est_html(both, img_px),
+                "est_q": est_html(q_html, img_px) if q_html else 0,
+                "est_a": est_html(a_html, img_px) if a_html else 0,
+                "alt": ' style="background:{}"'.format(t["alt"]) if zebra and num % 2 == 0 else "",
+            })
+            return True
+
+        def io_entry(io, active_ord):
+            """Question: masks over the image. Answer: the image with the masks outlined."""
+            shapes = io["shapes"]
+            if active_ord is None:                    # all masks at once
+                q_masks, a_masks, a_marks = shapes, [], shapes
+            else:                                     # one card per mask, as Anki does it
+                active = [sh for sh in shapes if sh["ord"] == active_ord]
+                inactive = [sh for sh in shapes if sh["ord"] != active_ord]
+                hide_rest = any(sh["oi"] for sh in shapes)
+                q_masks = active + (inactive if hide_rest else [])
+                a_masks = inactive if hide_rest else []
+                a_marks = active
+            header = proc_media(proc_raw(io["rest"][0][1])) if io["rest"] else ""
+            extras = "".join(
+                '<div class="fv">{}</div>'.format(proc_media(proc_raw(v))) for _, v in io["rest"])
+            image = proc_media(io["image"])
+            q = rs_section("sec-q", "rendered_front",
+                           (('<div class="fv">{}</div>'.format(header)) if header else "")
+                           + _io_figure(image, masks=q_masks))
+            a = rs_section("sec-a", "rendered_back",
+                           _io_figure(image, masks=a_masks, outlines=a_marks) + extras)
+            return q, a
+
+        def cloze_entry(fields_by_name, nt, czm):
+            """One entry per cloze note: hidden/revealed text plus the other fields."""
+            main, extras = [], []
+            for fld in sorted(nt["flds"], key=lambda f: f["ord"]):
+                val = fields_by_name.get(fld["name"], "")
+                if not val.strip():
+                    continue
+                if "{{c" in val:
+                    main.append(val)
+                else:
+                    extras.append(val)
+            if not main:
+                return None
+            def body(parts, reveal):
+                return "".join('<div class="fv">{}</div>'.format(
+                    proc_media(clean_rendered(_cloze_render(v, reveal)))) for v in parts)
+            extra_html = "".join('<div class="fv">{}</div>'.format(
+                proc_media(clean_rendered(v))) for v in extras)
+            if czm == 0:       # reveal
+                return rs_section("sec-q", "rendered_front", body(main, True)), \
+                    (rs_section("sec-a", "rendered_back", extra_html) if extra_html else "")
+            if czm == 1:       # hide
+                return rs_section("sec-q", "rendered_front", body(main, False)), \
+                    (rs_section("sec-a", "rendered_back", extra_html) if extra_html else "")
+            return rs_section("sec-q", "rendered_front", body(main, False)), \
+                rs_section("sec-a", "rendered_back", body(main, True) + extra_html)
+
+        def native_entry(card, note, nt):
+            q = proc_media(clean_rendered(card.question()))
+            answer = card.answer()
+            pieces = _ANSWER_HR_RE.split(answer, maxsplit=1)
+            if len(pieces) == 2 and pieces[1].strip():
+                answer = pieces[1]          # drop the repeated question above <hr id=answer>
+            a = proc_media(clean_rendered(answer))
+            if "image occlusion" in nt["name"].lower():
+                q = '<div class="io-wrap">{}</div>'.format(q) if q else q
+                a = '<div class="io-wrap">{}</div>'.format(a) if a else a
+            return (rs_section("sec-q", "rendered_front", q) if q else "",
+                    rs_section("sec-a", "rendered_back", a) if a else "")
+
+        def fields_entry(fields_by_name, nt, fc_nt):
+            czm = cloze_mode if cloze_mode != 3 else 0
+            sq, sa, sx, revealed_copies = [], [], [], []
+            for fld in sorted(nt["flds"], key=lambda f: f["ord"]):
+                fname = fld["name"]
+                conf = fc_nt.get(fname) or _auto_field_config(fname)
+                if not conf["export"]:
+                    continue
+                raw_val = fields_by_name.get(fname, "")
+                if not raw_val.strip():
+                    continue
+                text = raw_val.strip()
+                section = conf["section"]
+                if nt["type"] == 1 and "{{c" in text:
+                    if czm == 0:
+                        text = _cloze_render(text, True)
+                    elif czm == 1:
+                        text = _cloze_render(text, False)
+                    elif section == 0:
+                        revealed_copies.append((fname, conf, _cloze_render(text, True)))
+                        text = _cloze_render(text, False)
                     else:
-                        if mode != "pdf":
-                            needed_h = est + (card_gap if cards_on_page[0] > 0 else 0)
-                            if accumulated_h[0] + needed_h > content_h_px and cards_on_page[0] > 0:
-                                pb = emit_page_break(est <= page_h_px * 0.75)
-                                if pb:
-                                    html.append(pb)
-                            accumulated_h[0] += est + (card_gap if cards_on_page[0] > 0 else 0)
-                            cards_on_page[0] += 1
-                        html.extend(parts)
+                        text = _cloze_render(text, True)
+                val = proc_raw(text)
+                if not val:
+                    continue
+                target = (sq, sa, sx)[section]
+                target.append(render_field(fname, val, conf))
+            for fname, conf, text in reversed(revealed_copies):
+                val = proc_raw(text)
+                if val:
+                    sa.insert(0, render_field(fname, val, conf))
+            q_html = '<div class="sec-q">{}</div>'.format("".join(sq)) if sq else ""
+            a_html = ""
+            if sa:
+                a_html += '<div class="sec-a">{}</div>'.format("".join(sa))
+            if sx:
+                a_html += ('<hr class="sec-div">' if sa else "") + \
+                    '<div class="sec-x">{}</div>'.format("".join(sx))
+            return q_html, a_html
+
+        fc = self._collect_fc()
+        for cid in card_ids:
+            try:
+                card = mw.col.get_card(cid)
+                note = card.note()
+                nt = get_model(note)
+                fields_by_name = {f["name"]: note.fields[f["ord"]]
+                                  for f in nt["flds"] if f["ord"] < len(note.fields)}
+                io = _parse_io(fields_by_name, nt) if nt["type"] == 1 else None
+                if io:
+                    key = (note.id, card.ord) if io_each else (note.id,)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    q_html, a_html = io_entry(io, card.ord + 1 if io_each else None)
+                    img_px = io_img_est
+                elif cards_style and not (nt["type"] == 1 and cloze_mode != 3):
+                    q_html, a_html = native_entry(card, note, nt)
+                    img_px = None
+                else:
+                    if note.id in seen:
+                        continue
+                    seen.add(note.id)
+                    if cards_style:
+                        pair = cloze_entry(fields_by_name, nt, cloze_mode)
+                        q_html, a_html = pair if pair else ("", "")
+                    else:
+                        q_html, a_html = fields_entry(fields_by_name, nt, fc.get(nt["id"], {}))
+                    img_px = None
+                if add_entry(nt["name"], q_html, a_html, img_px):
                     cards_ok += 1
-                except Exception as e:
-                    logger.error("Karta #{}".format(idx), e)
+                else:
                     cards_skip += 1
+            except Exception as e:
+                logger.error("Karta #{}".format(cid), e)
+                cards_skip += 1
+
+        # ------------------------------------------------- layout -> units
+        def make_unit(ent, which):
+            if which == "both":
+                inner = ent["q"] + ('<hr class="sec-div">' if ent["q"] and ent["a"] else "") + ent["a"]
+                est = ent["est"]
+            elif which == "q":
+                inner, est = ent["q"], ent["est_q"]
+            else:
+                inner, est = ent["a"], ent["est_a"]
+            parts = ['<div class="{}"{}>'.format(card_class(est), ent["alt"])]
+            if show_cnum:
+                label = "#{}".format(ent["num"])
+                if which == "a":
+                    label += " &middot; " + html_module.escape(_t("lbl_answer"))
+                elif cards_style:
+                    label += " &middot; " + html_module.escape(ent["nt"])
+                parts.append('<div class="cnum">{}</div>'.format(label))
+            parts.append(inner)
+            parts.append("</div>")
+            return {"est": est, "parts": parts, "brk": False}
+
+        units = []
+        if qa_layout == 1:                        # worksheet, then answer key
+            units.extend(make_unit(e, "q") for e in entries if e["q"])
+            key_started = False
+            for e in entries:
+                if not e["a"]:
+                    continue
+                u = make_unit(e, "a")
+                if not key_started:
+                    u["parts"].insert(0, '<h2 class="key-title">{}</h2>'.format(
+                        html_module.escape(_t("answers_title"))))
+                    u["est"] += 48
+                    u["brk"] = bool(units)
+                    key_started = True
+                units.append(u)
+        elif qa_layout == 2:                      # question page, then answer page, per entry
+            for e in entries:
+                for which in ("q", "a"):
+                    if e[which]:
+                        u = make_unit(e, which)
+                        u["brk"] = bool(units)
+                        units.append(u)
         else:
-            for idx, cid in enumerate(card_ids):
-                try:
-                    card = mw.col.get_card(cid)
-                    note = card.note()
-                    nt = note.note_type()
-                    fmap = {}
-                    for fm in nt["flds"]:
-                        val = ""
-                        if fm["ord"] < len(note.fields):
-                            val = note.fields[fm["ord"]].strip()
-                        fmap[fm["name"]] = proc_raw(val)
-                    sq, sa, sx = [], [], []
-                    for w in self.field_widgets:
-                        fn = w.field_name
-                        if fn not in fc or not fc[fn]["export"]:
-                            continue
-                        val = fmap.get(fn, "")
-                        if not val:
-                            continue
-                        r = render_field(fn, val, fc[fn])
-                        s = fc[fn]["section"]
-                        if s == 0:
-                            sq.append(r)
-                        elif s == 1:
-                            sa.append(r)
-                        else:
-                            sx.append(r)
-                    if not sq and not sa and not sx:
-                        cards_skip += 1
-                        continue
+            units = [make_unit(e, "both") for e in entries]
 
-                    sec_count = (1 if sq else 0) + (1 if sa else 0) + (1 if sx else 0)
-                    all_content = "".join(sq) + "".join(sa) + "".join(sx)
-                    has_img = "base64" in all_content
-                    n_imgs = max(1, all_content.count('base64')) if has_img else 0
-                    text_chars, hard_lines = _text_metrics(all_content)
-                    est = estimate_card_h(sec_count, has_img, text_chars, n_imgs, hard_lines)
+        # ---------------------------------------------------- placement
+        def pack_units(segment, start_h):
+            pages, current, used = [], [], start_h
+            for u in segment:
+                needed = u["est"] + (card_gap if current else 0)
+                if current and used + needed > break_h_px:
+                    pages.append(current)
+                    current, used = [u], u["est"]
+                else:
+                    current.append(u)
+                    used += needed
+            if current:
+                pages.append(current)
+            return pages
 
-                    alt = ' style="background:{}"'.format(t["alt"]) if zebra and idx % 2 == 1 else ""
-                    parts = ['<div class="{}"{}>'.format(card_class(est), alt)]
-                    if show_nums:
-                        parts.append('<div class="cnum">#{}</div>'.format(idx + 1))
-                    if sq:
-                        parts.append('<div class="sec-q">{}</div>'.format("".join(sq)))
-                    if sq and sa:
-                        parts.append('<hr class="sec-div">')
-                    if sa:
-                        parts.append('<div class="sec-a">{}</div>'.format("".join(sa)))
-                    if sx and (sq or sa):
-                        parts.append('<hr class="sec-div">')
-                    if sx:
-                        parts.append('<div class="sec-x">{}</div>'.format("".join(sx)))
-                    parts.append("</div>")
-
-                    if compact and mode in ("preview", "pdf_fallback"):
-                        card_items.append((idx, est, parts))
-                    else:
-                        if mode != "pdf":
-                            needed_h = est + (card_gap if cards_on_page[0] > 0 else 0)
-                            if accumulated_h[0] + needed_h > content_h_px and cards_on_page[0] > 0:
-                                pb = emit_page_break(est <= page_h_px * 0.75)
-                                if pb:
-                                    html.append(pb)
-                            accumulated_h[0] += est + (card_gap if cards_on_page[0] > 0 else 0)
-                            cards_on_page[0] += 1
-                        html.extend(parts)
-                    cards_ok += 1
-                except Exception as e:
-                    logger.error("Karta #{}".format(idx), e)
-                    cards_skip += 1
-
-        if compact and card_items and mode == "preview":
-            pages = pack_compact_pages(card_items)
-            for pi, page_cards in enumerate(pages):
-                if pi > 0:
-                    pb = emit_page_break()
-                    if pb:
-                        html.append(pb)
-                for c_idx, est, parts in page_cards:
-                    html.extend(parts)
-        elif compact and card_items and mode == "pdf_fallback":
-            acc_h = title_h_est
-            cards_on_page = 0
-            for _, est, parts in card_items:
-                if acc_h + est > break_h_px and cards_on_page > 0:
-                    html.append(
-                        '<div style="break-before:page;height:0;'
-                        'display:block;margin:0;padding:0"></div>'
-                    )
-                    acc_h = 0
-                    cards_on_page = 0
-                acc_h += est
-                cards_on_page += 1
-                html.extend(parts)
-        elif compact and card_items:
-            card_items.sort(key=lambda c: c[0])
-            for _, _, parts in card_items:
-                html.extend(parts)
+        if mode == "pdf":
+            for n, u in enumerate(units):
+                if u["brk"] and n:
+                    html.append('<div class="page-break"></div>')
+                html.extend(u["parts"])
+        elif mode == "legacy":
+            for u in units:
+                html.extend(u["parts"])
+        elif compact and mode == "preview":
+            segments = [[]]
+            for u in units:
+                if u["brk"] and segments[-1]:
+                    segments.append([])
+                segments[-1].append(u)
+            first_page = True
+            for si, segment in enumerate(segments):
+                for page_units in pack_units(segment, title_h_est if si == 0 else 0):
+                    if not first_page:
+                        html.append(emit_page_break())
+                    first_page = False
+                    for u in page_units:
+                        html.extend(u["parts"])
+        elif compact:                              # pdf_fallback
+            acc_h, on_page = title_h_est, 0
+            for u in units:
+                if on_page and (u["brk"] or acc_h + u["est"] > break_h_px):
+                    html.append('<div style="break-before:page;height:0;'
+                                'display:block;margin:0;padding:0"></div>')
+                    acc_h, on_page = 0, 0
+                acc_h += u["est"]
+                on_page += 1
+                html.extend(u["parts"])
+        else:                                      # preview / pdf_fallback, standard layout
+            for n, u in enumerate(units):
+                needed = u["est"] + (card_gap if cards_on_page[0] > 0 else 0)
+                overflow = accumulated_h[0] + needed > content_h_px and cards_on_page[0] > 0
+                if (u["brk"] and n) or overflow:
+                    html.append(emit_page_break(u["est"] <= page_h_px * 0.75))
+                    needed = u["est"]
+                accumulated_h[0] += needed
+                cards_on_page[0] += 1
+                html.extend(u["parts"])
 
         if show_tool_notice:
             html.append(build_tool_footer())
@@ -3411,32 +4091,75 @@ class PDFExportDialog(QDialog):
 _dlg = None
 
 
-def show_export_dialog():
+def _dialog_alive(dlg):
+    try:
+        dlg.windowTitle()  # raises RuntimeError once the C++ object is gone
+        return True
+    except (RuntimeError, AttributeError):
+        return False
+
+
+def _get_dialog():
+    """Return THE export window, creating it only when needed.
+
+    One window is reused for the whole session (so it can be restored instead of
+    stacking new ones); it is rebuilt only when the collection/profile changed.
+    """
     global _dlg
-    _dlg = PDFExportDialog(mw)
-    _dlg.show()
-    _dlg.raise_()
-    _dlg.activateWindow()
+    if mw is None or mw.col is None:
+        return None
+    if _dlg is not None and (not _dialog_alive(_dlg) or _dlg._col_ref is not mw.col):
+        if _dialog_alive(_dlg):
+            _dlg.deleteLater()
+        _dlg = None
+    if _dlg is None:
+        _dlg = PDFExportDialog(mw)
+    elif not _dlg.isVisible():
+        _dlg.refresh_collection()
+    return _dlg
+
+
+def show_export_dialog():
+    dlg = _get_dialog()
+    if dlg is None:
+        showWarning(_t("msg_no_collection"))
+        return
+    # restore from minimized / behind other windows rather than opening another one
+    dlg.setWindowState(
+        (dlg.windowState() & ~Qt.WindowState.WindowMinimized) | Qt.WindowState.WindowActive)
+    dlg.show()
+    dlg.raise_()
+    dlg.activateWindow()
 
 
 def _quick_legacy_export():
-    """Open the currently focused deck as Legacy HTML (Shift+P shortcut)."""
-    if not mw.col:
+    """Open the currently focused deck as Legacy HTML (Shift+Alt+P shortcut)."""
+    dlg = _get_dialog()
+    if dlg is None:
         return
-    global _dlg
-    if _dlg is None:
-        _dlg = PDFExportDialog(mw)
     cur = mw.col.decks.current()
     if cur:
-        top = cur["name"].split("::")[0]
-        idx = _dlg.deck_combo.findText(top)
-        if idx >= 0:
-            _dlg.deck_combo.setCurrentIndex(idx)
-        if "::" in cur["name"]:
-            sidx = _dlg.subdeck_combo.findData(cur["name"])
-            if sidx >= 0:
-                _dlg.subdeck_combo.setCurrentIndex(sidx)
-    _dlg._on_legacy()
+        dlg.select_deck(cur["name"])
+    dlg._on_legacy()
+
+
+def _rebuild_dialog():
+    """Recreate the window after a language change (strings are read at build time)."""
+    global _dlg
+    selected, was_visible = None, False
+    if _dlg is not None and _dialog_alive(_dlg):
+        selected, was_visible = _dlg._sel(), _dlg.isVisible()
+        _dlg.hide()
+        _dlg.deleteLater()
+    _dlg = None
+    _retranslate_menu()
+    if was_visible and mw is not None and mw.col is not None:
+        dlg = _get_dialog()
+        if selected:
+            dlg.select_deck(selected)
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
 
 
 _dev_menu = QMenu(_t("menu_root"), mw)
@@ -3451,3 +4174,9 @@ _quick_legacy_action.setShortcut(QKeySequence("Shift+Alt+P"))
 _quick_legacy_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
 _quick_legacy_action.triggered.connect(_quick_legacy_export)
 _dev_menu.addAction(_quick_legacy_action)
+
+
+def _retranslate_menu():
+    _dev_menu.setTitle(_t("menu_root"))
+    action.setText(_t("menu_action"))
+    _quick_legacy_action.setText(_t("menu_quick_legacy"))
