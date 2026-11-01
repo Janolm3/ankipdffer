@@ -101,6 +101,20 @@ _GLYPHS = {
     "down": '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="5" viewBox="0 0 8 5">'
             '<path d="M1 1l3 3 3-3" fill="none" {glyph_stroke} stroke-width="1.4" '
             'stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    # line.3.horizontal.decrease (filter); the "on" variant is drawn in the accent colour
+    "filter": '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14">'
+              '<path d="M2 3.5h10M4 7h6M5.8 10.5h2.4" fill="none" {glyph_stroke} stroke-width="1.5" '
+              'stroke-linecap="round"/></svg>',
+    "filter_on": '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14">'
+                 '<circle cx="7" cy="7" r="7" {accent_fill}/>'
+                 '<path d="M3.6 4.6h6.8M5 7h4M6.1 9.4h1.8" fill="none" stroke="#ffffff" '
+                 'stroke-width="1.4" stroke-linecap="round"/></svg>',
+    "minus_circle": '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">'
+                    '<circle cx="8" cy="8" r="7.25" fill="none" {glyph_stroke} stroke-width="1.2"/>'
+                    '<path d="M5 8h6" {glyph_stroke} stroke-width="1.5" stroke-linecap="round"/></svg>',
+    "plus_circle": '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">'
+                   '<circle cx="8" cy="8" r="7.25" fill="none" {glyph_stroke} stroke-width="1.2"/>'
+                   '<path d="M5 8h6M8 5v6" {glyph_stroke} stroke-width="1.5" stroke-linecap="round"/></svg>',
     "search": '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14">'
               '<circle cx="6" cy="6" r="4.2" fill="none" {glyph_stroke} stroke-width="1.5"/>'
               '<path d="m9.2 9.2 3.3 3.3" {glyph_stroke} stroke-width="1.6" stroke-linecap="round"/></svg>',
@@ -139,6 +153,19 @@ def glyph_path(name, pal):
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(svg)
     return path.replace("\\", "/")
+
+
+def dot_icon(color, size=12):
+    """Round colour swatch for pop-up menus (SVG, so it stays sharp)."""
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" width="{s}" height="{s}" viewBox="0 0 12 12">'
+           '<circle cx="6" cy="6" r="5" {fill} stroke="#000000" stroke-opacity="0.18" '
+           'stroke-width="1"/></svg>').format(s=size, fill=_svg_paint(color, "fill"))
+    digest = hashlib.sha1(svg.encode("utf-8")).hexdigest()[:10]
+    path = os.path.join(_glyph_dir(), "dot-{}.svg".format(digest))
+    if not os.path.exists(path):
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(svg)
+    return QIcon(path)
 
 
 def glyph_icon(name, pal, size=14):
@@ -293,6 +320,9 @@ QCheckBox::indicator:checked:disabled {{ image: url("{box_on_off}"); }}
 QLabel#TableHeader {{ color: {secondary}; font-size: 11px; font-weight: 600; letter-spacing: 0.4px; }}
 FieldConfigWidget {{ background: transparent; }}
 FieldConfigWidget[last="false"] {{ border-bottom: 1px solid {table_line}; }}
+QWidget#FilterRow {{ background: transparent; }}
+QWidget#FilterRow[last="false"] {{ border-bottom: 1px solid {table_line}; }}
+QLabel#QueryLabel {{ color: {secondary}; font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 11px; }}
 
 /* ---------- progress ---------- */
 QProgressBar {{ background: {track}; border: none; border-radius: 2px; max-height: 4px; min-height: 4px; }}

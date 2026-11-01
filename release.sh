@@ -78,7 +78,7 @@ rm -f "${DIST_DIR}/${ZIP_NAME}"
 
 # Sanity: the modules __init__.py imports must be in the zip.
 LISTING="$(unzip -l "${DIST_DIR}/${ZIP_NAME}")"
-for required in __init__.py manifest.json store.py translations.py macui.py; do
+for required in __init__.py manifest.json store.py translations.py macui.py mathsvg.py filters.py .vendor/mathjax/tex-svg-full.js; do
     grep -q " ${required}\$" <<<"${LISTING}" || {
         echo "!! ${required} missing from ${ZIP_NAME}" >&2
         exit 1

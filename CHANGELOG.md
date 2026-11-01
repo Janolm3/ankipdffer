@@ -2,6 +2,20 @@
 
 All notable changes to the **AnkiPdffer Dev** add-on will be documented in this file.
 
+## [1.4.3] - 2026-11-01
+
+### Added
+- **Filter builder**: the filter icon in the search field opens quick filters (card state, flag, the deck's tags, note type, added, reviewed, difficult cards) and *Build filter…* (⌘⇧F), a rule editor in the style of Mail rules: rows of *property – condition – value*, matching all or any of them, with the matching card count and the resulting Anki search shown live. Properties: card state, flag, tag, note type, card type, field, text, added, edited, reviewed (with the answer), first studied, due, interval, reviews, lapses, ease, FSRS difficulty / stability / retrievability, and any Anki search.
+- **MathJax formulas are drawn**: `\(…\)` and `\[…\]` are rendered to vector SVG with the bundled MathJax 3.2.2 (Apache 2.0) before export, inline with the text and centred for display math — in PDFs, Preview and HTML. Formulas MathJax cannot read stay as written.
+- **One box per card type**: note types whose card types show different fields (e.g. *Question 1/Answer 1* and *Question 2/Answer 2* with a shared *Context*) get one box per card, each with its own fields plus the shared ones. Detected from the card templates; the Fields tab shows which card a field belongs to and has a switch to override it. Plain *Basic (and reversed card)* stays one box per note.
+- **Cloze colour**: revealed cloze answers and `[...]` gaps can use a colour of choice (red, orange, green, blue, purple, pink) instead of the theme colour, with lighter variants on dark pages.
+
+### Changed
+- Option tabs: the form is centred both horizontally and vertically in the tab at any window size, and pop-up menus and segmented controls share one width so their right edges line up.
+
+### Fixed
+- 1.4.2 could not open the export window once the PDF engine check had been saved (the status line was drawn before its buttons existed).
+
 ## [1.4.2] - 2026-11-01
 
 ### Added

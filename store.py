@@ -48,6 +48,7 @@ DEFAULT_SETTINGS = {
     # v1.4
     "qa_layout": 0,       # 0 together, 1 questions then answers, 2 question page / answer page
     "cloze_mode": 3,      # 0 reveal, 1 hide, 2 hidden->revealed, 3 native (Anki: one card per cloze)
+    "cloze_color": 0,     # colour of cloze answers: 0 theme accent, then CLOZE_COLORS order
     "io_mode": 0,         # 0 all masks at once (one entry per note), 1 one card per mask
     "order": 0,           # 0 deck order, 1 creation date, 2 shuffle
     "page_numbers": False,
@@ -136,6 +137,7 @@ class SettingsStore:
         self.fields = {}
         self.presets = {}
         self.field_presets = {}
+        self.nt_options = {}  # per note type: {"split": True/False}; missing = automatic
         self.window = {}
         self.load()
 
@@ -171,6 +173,12 @@ class SettingsStore:
                             "fields": {str(f): coerce_field_config(c) for f, c in fields.items()},
                             "order": [coerce_field_config(c) for c in order],
                         }
+            self.nt_options = {}
+            options = raw.get("nt_options")
+            if isinstance(options, dict):
+                for nt_name, body in options.items():
+                    if isinstance(body, dict) and isinstance(body.get("split"), bool):
+                        self.nt_options[str(nt_name)] = {"split": body["split"]}
             window = raw.get("window")
             self.window = window if isinstance(window, dict) else {}
         else:  # v1: flat dict of global options
@@ -185,6 +193,7 @@ class SettingsStore:
             "fields": self.fields,
             "presets": self.presets,
             "field_presets": self.field_presets,
+            "nt_options": self.nt_options,
             "window": self.window,
         }
         directory = os.path.dirname(self.path) or "."
@@ -219,8 +228,23 @@ class SettingsStore:
     def reset_fields(self, nt_name=None):
         if nt_name is None:
             self.fields = {}
+            self.nt_options = {}
         else:
             self.fields.pop(nt_name, None)
+            self.nt_options.pop(nt_name, None)
+
+    # ------------------------------------------------- note type options
+    def nt_option(self, nt_name, key, default=None):
+        return self.nt_options.get(nt_name, {}).get(key, default)
+
+    def set_nt_option(self, nt_name, key, value):
+        """`value` None removes the option (back to automatic)."""
+        if value is None:
+            self.nt_options.get(nt_name, {}).pop(key, None)
+            if not self.nt_options.get(nt_name):
+                self.nt_options.pop(nt_name, None)
+        else:
+            self.nt_options.setdefault(nt_name, {})[key] = value
 
     # ------------------------------------------------------------- presets
     def preset_names(self):

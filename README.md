@@ -11,6 +11,13 @@ AnkiPdffer turns flashcards into clean, readable documents for printing, offline
 
 ---
 
+## What's new in 1.4.3
+
+- **Filter builder**: quick filters in the search field and a rule editor (⌘⇧F) with a live card count — no Anki search syntax needed.
+- **MathJax formulas** are drawn as sharp vector graphics, inline with the text.
+- **One box per card type** for note types whose cards show different fields (e.g. *Question 1* / *Question 2* with a shared *Context*).
+- **Cloze colour** of your choice for revealed answers.
+
 ## What's new in 1.4.2
 
 - **Export to PDF button on the deck screen**, right below *Study Now*; it opens AnkiPdffer on that deck.
@@ -178,6 +185,13 @@ Tools → AnkiPdffer → Open export dialog…
 ```
 
 Then choose your deck (and optional filter), adjust the tabs, and export.
+
+### Filtering
+
+Type any Anki search in the filter field, or click its filter icon:
+
+- **Quick filters** add one condition: card state, flag, the deck's tags, note type, added or reviewed recently, difficult cards.
+- **Build filter…** (⌘⇧F) opens a rule editor. Each row is *property – condition – value* (e.g. *Reviewed – in the last – 7 days – answered Again*); match *all* or *any* rows. The matching card count and the Anki search it produces are shown as you edit.
 
 Or open a deck and click **Export to PDF** below *Study Now* — the window opens on that deck (Settings → *Deck screen* hides the button).
 
