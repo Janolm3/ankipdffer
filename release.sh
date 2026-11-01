@@ -61,7 +61,7 @@ trap 'rm -rf "${STAGE}"' EXIT
 # Every top-level module is shipped (store.py, translations.py, ...); dev tooling,
 # user data and build output are not.
 rsync -a \
-    --exclude ".git" --exclude ".gitignore" --exclude "dev/" --exclude "dist/" \
+    --exclude ".git" --exclude ".claude/" --exclude ".gitignore" --exclude "dev/" --exclude "dist/" \
     --exclude "__pycache__/" --exclude "*.pyc" --exclude ".DS_Store" \
     --exclude "settings.json" --exclude "meta.json" --exclude "last_export_log.txt" --exclude "user_files/" \
     --exclude "release.sh" --exclude "CHANGELOG.md" --exclude "README.md" --exclude "docs/" \
