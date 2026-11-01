@@ -26,6 +26,8 @@ from .store import (
 )
 from .translations import LANGUAGES, STRINGS as _EXTRA_STRINGS
 from . import macui
+from . import mathsvg
+from . import filters
 
 try:
     from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
@@ -333,13 +335,22 @@ class ExportLogger:
 
 
 logger = ExportLogger()
-EXPORT_BUILD = "1.4.2-20261101"
+EXPORT_BUILD = "1.4.3-20261101"
 TOOL_NAME = "AnkiPdffer"
+# cloze answer colours: (string key, on light pages, on dark pages)
+CLOZE_COLORS = [
+    ("cz_col_red", "#d93a30", "#ff6b61"),
+    ("cz_col_orange", "#d9720b", "#ffa94d"),
+    ("cz_col_green", "#2b8a3e", "#51cf66"),
+    ("cz_col_blue", "#1d63d8", "#74b0ff"),
+    ("cz_col_purple", "#7c3fc9", "#b197fc"),
+    ("cz_col_pink", "#cc2e6a", "#f783ac"),
+]
 TOOL_URL = "https://ankiweb.net/shared/info/1987190048"
 TOOL_URL_DISPLAY = "ankiweb.net/shared/info/1987190048"
 
 
-def _addon_version(default="1.4.2"):
+def _addon_version(default="1.4.3"):
     try:
         manifest_path = os.path.join(os.path.dirname(__file__), "manifest.json")
         with open(manifest_path, "r", encoding="utf-8") as f:
@@ -601,7 +612,8 @@ class FieldConfigWidget(QWidget):
     SPACING = 8
     NAME_MIN = 96
 
-    def __init__(self, field_name, is_front=False, nt_id=0, nt_name="", config=None, parent=None):
+    def __init__(self, field_name, is_front=False, nt_id=0, nt_name="", config=None, parent=None,
+                 card_hint=""):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setProperty("last", False)
@@ -621,7 +633,16 @@ class FieldConfigWidget(QWidget):
         line1.addWidget(self.export_cb)
         self.name_label = macui.ElidedLabel(field_name)
         self.name_label.setMinimumWidth(self.NAME_MIN)
-        line1.addWidget(self.name_label, 1)
+        name_box = QHBoxLayout()  # one layout item, so the table columns stay aligned
+        name_box.setSpacing(6)
+        name_box.addWidget(self.name_label, 1)
+        self.card_label = None
+        if card_hint:
+            self.card_label = QLabel(card_hint)
+            self.card_label.setObjectName("HintLabel")
+            self.card_label.setToolTip(_t("tip_card_hint"))
+            name_box.addWidget(self.card_label)
+        line1.addLayout(name_box, 1)
         self.section_combo = NoScrollComboBox()
         self.section_combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.section_combo.addItems([_t("sec_front"), _t("sec_back"), _t("sec_extra")])
@@ -1024,6 +1045,47 @@ def _notetype_is_io(nt):
     return "image occlusion" in (nt.get("name") or "").lower()
 
 
+_TEMPLATE_REF_RE = re.compile(r"\{\{\s*[#^/]?\s*([^{}]+?)\s*\}\}")
+
+
+def _card_field_sets(nt):
+    """The fields each card type (template) of a note type shows, in template order.
+
+    Read from the template source ({{Field}}, {{#Field}}, {{text:Field}}, ...); question and
+    answer side together, so {{FrontSide}} needs no special handling.
+    """
+    names = {f["name"] for f in nt.get("flds", [])}
+
+    def refs(src):
+        found = set()
+        for m in _TEMPLATE_REF_RE.finditer(src or ""):
+            key = m.group(1).split(":")[-1].strip()
+            if key in names:
+                found.add(key)
+        return found
+
+    return [refs(t.get("qfmt")) | refs(t.get("afmt")) for t in nt.get("tmpls", [])]
+
+
+def _can_split_cards(nt):
+    return (nt.get("type") != 1 and not _notetype_is_io(nt) and len(nt.get("tmpls", [])) > 1)
+
+
+def _split_auto(nt):
+    """One box per card type when the card types show different fields (e.g. Question 1 /
+    Question 2); a plain "Basic (and reversed)" uses the same fields on both and stays one box."""
+    if not _can_split_cards(nt):
+        return False
+    return len({frozenset(s) for s in _card_field_sets(nt)}) > 1
+
+
+def _split_cards(nt):
+    choice = _store.nt_option(nt["name"], "split")
+    if choice is None:
+        return _split_auto(nt)
+    return bool(choice) and _can_split_cards(nt)
+
+
 _MEDIA_TAG_RE = re.compile(r'\[sound:[^\]]*\]|\[anki:play:[^\]]*\]|\[\[type:[^\]]*\]\]')
 _ANSWER_HR_RE = re.compile(r'<hr\s+id=["\']?answer["\']?\s*/?>', re.IGNORECASE)
 _CLOZE_INNER_RE = re.compile(r'\{\{c(\d+)::((?:(?!\{\{c\d+::).)*?)\}\}', re.DOTALL)
@@ -1229,60 +1291,51 @@ class PDFExportDialog(QDialog):
         outer.addStretch(1)
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        form.setFormAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+        # centred both ways: the form sits in the middle of the tab at any window size
+        form.setFormAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
         form.setHorizontalSpacing(10)
         form.setVerticalSpacing(10)
         outer.addLayout(form)
         outer.addStretch(1)
-        page._outer, page._form = outer, form
+        page._form = form
         # sizes are only reliable once the stylesheet has been applied
         QTimer.singleShot(0, lambda: PDFExportDialog._balance_form(page))
         return page, form
 
     @staticmethod
     def _balance_form(page):
-        """Even out the visual weight of a form page.
+        """Line up the right edges of the controls.
 
-        Labels are short, light text and controls wide, heavy boxes, so a form centred by its
-        outline looks pulled to the right. The block is moved left until the weighted centre
-        (controls count four times a label) sits on the page's centre line; segmented controls
-        that fall a few points short of the other controls are stretched so the right edges align.
+        Segmented controls and pop-up menus that fall a few points short of the widest control
+        get its width (measured once the stylesheet applies), so the column has one right edge.
+        The form itself is centred both ways in the tab (see _form_page).
         """
         try:
-            form, outer = page._form, page._outer
-            label_w = field_w = 0
+            form = page._form
+            field_w = 0
             fields = []
             for row in range(form.rowCount()):
                 label = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
                 field = form.itemAt(row, QFormLayout.ItemRole.FieldRole)
                 if label is None or field is None:
                     continue  # spanning rows (separators, notes) take no part
-                for item in (label, field):
-                    if item.widget() is not None:
-                        item.widget().ensurePolished()
-                label_w = max(label_w, label.sizeHint().width())
+                if field.widget() is not None:
+                    field.widget().ensurePolished()
                 field_w = max(field_w, field.sizeHint().width())
                 fields.append(field.widget())
-            for w in fields:
-                if (isinstance(w, macui.SegmentedControl) and w.property("role") != "tabs"
-                        and 0 < field_w - w.sizeHint().width() <= 40):
+
+            def natural(w):  # what the control needs once styled, whatever width it was given
+                return max(w.sizeHint().width(), w.minimumWidth() if isinstance(w, QComboBox) else 0)
+
+            controls = [w for w in fields if isinstance(w, QComboBox) or (
+                isinstance(w, macui.SegmentedControl) and w.property("role") != "tabs")]
+            if controls:
+                field_w = max([field_w] + [natural(w) for w in controls])
+            for w in controls:
+                if field_w - natural(w) <= 40:  # near misses only: no 300 pt wide "A4" pop-up
                     w.setFixedWidth(field_w)
-            spacing = form.horizontalSpacing()
-            block = label_w + spacing + field_w
-            label_centre = label_w / 2 - block / 2
-            field_centre = block / 2 - field_w / 2
-            shift = (label_centre + 4 * field_centre) / 5  # > 0: the weight sits right of centre
-            if getattr(page, "_balance_spacer", None) is None:
-                # Preferred: it gives way (down to 0) when the window is narrow
-                page._balance_spacer = QSpacerItem(
-                    0, 0, QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
-                outer.insertItem(outer.count() - 1, page._balance_spacer)
-            page._balance_spacer.changeSize(
-                int(max(0, min(2 * shift, 80))), 0,
-                QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
-            outer.invalidate()
         except RuntimeError:
             pass  # the page was deleted before the timer fired
 
@@ -1371,6 +1424,12 @@ class PDFExportDialog(QDialog):
         self.filter_edit.setClearButtonEnabled(True)
         self.filter_edit.addAction(macui.glyph_icon("search", self._pal),
                                    QLineEdit.ActionPosition.LeadingPosition)
+        self.filter_action = self.filter_edit.addAction(
+            macui.glyph_icon("filter", self._pal), QLineEdit.ActionPosition.TrailingPosition)
+        self.filter_action.setToolTip(_t("flt_menu_tip"))
+        self.filter_action.triggered.connect(self._show_filter_menu)
+        self.filter_edit.textChanged.connect(self._sync_filter_icon)
+        self._filter_state = None  # rules behind the current filter text (from the builder)
         self.filter_edit.setMinimumWidth(190)
         self.filter_edit.setMaximumWidth(330)
         self.filter_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -1396,15 +1455,18 @@ class PDFExportDialog(QDialog):
                                         _t("cloze_both"), _t("cloze_native")], 250)
         self.cloze_combo.setToolTip(_t("tip_cloze"))
         form.addRow(self._tip_label(_t("lbl_cloze"), _t("tip_cloze")), self.cloze_combo)
+        self.cloze_color_combo = self._popup([], 250)
+        for i, key in enumerate(["cz_col_theme"] + [k for k, _, _ in CLOZE_COLORS]):
+            colour = CLOZE_COLORS[i - 1][1] if i else "#2563eb"
+            self.cloze_color_combo.addItem(macui.dot_icon(colour), _t(key))
+        self.cloze_color_combo.setToolTip(_t("tip_cloze_color"))
+        form.addRow(self._tip_label(_t("lbl_cloze_color"), _t("tip_cloze_color")), self.cloze_color_combo)
         self.io_combo = self._popup([_t("io_all"), _t("io_each")], 250)
         self.io_combo.setToolTip(_t("tip_io"))
         form.addRow(self._tip_label(_t("lbl_io"), _t("tip_io")), self.io_combo)
         self.order_combo = self._popup([_t("order_deck"), _t("order_created"), _t("order_shuffle")], 250)
         form.addRow(_t("lbl_order"), self.order_combo)
-        column = (self.qa_combo, self.cloze_combo, self.io_combo, self.order_combo)
-        width = max(c.sizeHint().width() for c in column)
-        for c in column:  # one aligned column of pop-ups, wide enough for the longest translation
-            c.setFixedWidth(width)
+        # one aligned column of pop-ups, wide enough for the longest translation: _balance_form
 
         form.addRow(macui.separator())
         self.show_title_cb = QCheckBox(_t("cb_title"))
@@ -1515,6 +1577,20 @@ class PDFExportDialog(QDialog):
         self.fields_layout.setContentsMargins(0, 0, 0, 0)
         self.fields_layout.setSpacing(6)
         self.fields_layout.addWidget(self._build_notetype_bar())
+        self.split_row = QWidget()
+        self.split_row.setObjectName("Page")
+        sr = QHBoxLayout(self.split_row)
+        sr.setContentsMargins(2, 0, 0, 2)
+        sr.setSpacing(10)
+        self.split_cb = QCheckBox(_t("cb_split_cards"))
+        self.split_cb.setToolTip(_t("tip_split_cards"))
+        self.split_cb.toggled.connect(self._on_split_toggled)
+        sr.addWidget(self.split_cb)
+        self.split_hint = macui.ElidedLabel("")
+        self.split_hint.setObjectName("Secondary")
+        sr.addWidget(self.split_hint, 1)
+        self.split_row.setVisible(False)
+        self.fields_layout.addWidget(self.split_row)
         self.fields_info = QLabel("")
         self.fields_info.setObjectName("SettingsInfoLabel")
         self.fields_info.setVisible(False)
@@ -1633,13 +1709,13 @@ class PDFExportDialog(QDialog):
         self.engine_status.setMinimumWidth(300)
         self.engine_status.setMaximumWidth(420)
         form.addRow(_t("grp_engine") + ":", self.engine_status)
-        self._engine_report = None
-        self._show_engine_status()  # last known state; re-checked quietly on the first visit
         self.engine_check_btn = QPushButton(_t("btn_engine_check"))
         self.engine_check_btn.clicked.connect(lambda: self._check_engine(force=True))
         self.engine_setup_btn = QPushButton(_t("btn_engine_setup"))
         self.engine_setup_btn.clicked.connect(self._open_engine_setup)
         form.addRow("", self._hrow(self.engine_check_btn, self.engine_setup_btn))
+        self._engine_report = None
+        self._show_engine_status()  # last known state (needs the buttons); re-checked quietly later
 
         form.addRow(macui.separator())
         self.reset_btn = QPushButton(_t("btn_reset_all"))
@@ -1715,6 +1791,7 @@ class PDFExportDialog(QDialog):
             bind("Ctrl+{}".format(i + 1), lambda i=i: self._go_to_tab(i))
         bind(QKeySequence.StandardKey.Find, lambda: (self.filter_edit.setFocus(), self.filter_edit.selectAll()))
         bind(QKeySequence.StandardKey.Close, self.close)
+        bind("Ctrl+Shift+F", self._open_filter_builder)
         bind("Ctrl+P", lambda: self.preview_btn.isEnabled() and self.preview_btn.click())
         for seq in ("Ctrl+Return", "Ctrl+Enter"):
             bind(seq, lambda: self.export_btn.isEnabled() and self.export_btn.click())
@@ -1722,6 +1799,105 @@ class PDFExportDialog(QDialog):
         for btn, seq in ((self.preview_btn, "Ctrl+P"), (self.export_btn, "Ctrl+Return")):
             btn.setToolTip("{}  {}".format(btn.text(), QKeySequence(seq).toString(native)))
         self.filter_edit.returnPressed.connect(self._refresh_count_now)
+
+    # -------------------------------------------------------- filtering
+    def _filter_context(self):
+        dlg = self
+        deck = self._sel()
+        deck_query = _deck_query(deck) if deck else ""
+
+        class Ctx:
+            palette = dlg._pal
+            esc = filters.Escaper(mw.col)
+            _tags = None
+
+            def tags(self):
+                """(tag, count) of the selected deck's notes, most used first."""
+                if self._tags is None:
+                    counts = {}
+                    try:
+                        nids = mw.col.find_notes(deck_query) if deck_query else []
+                        for i in range(0, len(nids), 500):
+                            ids = ",".join(str(n) for n in nids[i:i + 500])
+                            for (tags,) in mw.col.db.all(
+                                    "SELECT tags FROM notes WHERE id IN ({})".format(ids)):
+                                for tag in tags.split():
+                                    counts[tag] = counts.get(tag, 0) + 1
+                    except Exception as e:
+                        logger.error("Tag scan failed", e)
+                    self._tags = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0].lower()))
+                return self._tags
+
+            @staticmethod
+            def _deck_types():
+                mids = list(getattr(dlg, "_deck_nt_counts", {}) or {})
+                types = [mw.col.models.get(mid) for mid in mids]
+                return [nt for nt in types if nt]
+
+            def notetypes(self):
+                return [nt["name"] for nt in self._deck_types()]
+
+            def templates(self):
+                names = []
+                for nt in self._deck_types():
+                    for t in nt.get("tmpls", []):
+                        if t["name"] not in names:
+                            names.append(t["name"])
+                return names
+
+            def fields(self):
+                names = []
+                for nt in self._deck_types():
+                    for f in sorted(nt.get("flds", []), key=lambda f: f["ord"]):
+                        if f["name"] not in names:
+                            names.append(f["name"])
+                return names
+
+            @staticmethod
+            def count(query):
+                full = deck_query + (" ({})".format(query) if query else "")
+                return len(mw.col.find_cards(full)), len(mw.col.find_notes(full))
+
+            @staticmethod
+            def has_filter():
+                return bool(dlg.filter_edit.text().strip())
+
+        return Ctx()
+
+    def _show_filter_menu(self):
+        if mw.col is None:
+            return
+        menu = QMenu(self)
+        macui.round_popup(menu, self._pal)
+        filters.fill_quick_menu(
+            menu, self._filter_context(), _t,
+            add_term=lambda q: self.filter_edit.setText(filters.add_term_to(self.filter_edit.text(), q)),
+            open_builder=lambda: QTimer.singleShot(0, self._open_filter_builder),
+            clear=lambda: self.filter_edit.clear())
+        rect = self.filter_edit.rect()
+        menu.exec(self.filter_edit.mapToGlobal(rect.bottomRight()) - QPoint(menu.sizeHint().width(), -4))
+
+    def _open_filter_builder(self):
+        if mw.col is None or not self._sel():
+            return
+        text = self.filter_edit.text().strip()
+        state = self._filter_state
+        if state and state["query"] == text:
+            rules, match_all = state["rules"], state["match_all"]
+        elif text:  # typed by hand: keep it as an "Anki search" condition
+            rules, match_all = [dict(filters.default_rule("custom"), value=text)], True
+        else:
+            rules, match_all = None, True
+        deck = self._sel()
+        dlg = filters.FilterBuilderDialog(self, self._filter_context(), _t, deck, rules, match_all)
+        if dlg.exec():
+            self._filter_state = {"query": dlg.query, "rules": dlg.rules(),
+                                  "match_all": dlg.match_all()}
+            self.filter_edit.setText(dlg.query)
+            self._refresh_count_now()
+
+    def _sync_filter_icon(self, text):
+        self.filter_action.setIcon(macui.glyph_icon("filter_on" if text.strip() else "filter", self._pal))
 
     def _go_to_tab(self, idx):
         if self.tabs.buttons[idx].isVisibleTo(self.tabs):
@@ -2172,6 +2348,8 @@ class PDFExportDialog(QDialog):
             hint = ""
         self.nt_source.setText(hint)
         self.nt_source.setToolTip(hint)
+        self._nt_source_last = source
+        self._show_split_switch(nt)
         is_io = bool(nt) and _notetype_is_io(nt)
         self.nt_reset_btn.setEnabled(bool(nt) and not is_io)
         self.field_preset_btn.setEnabled(bool(nt) and not is_io)
@@ -2179,6 +2357,26 @@ class PDFExportDialog(QDialog):
         if nt is not None:
             self._add_note_type_group(nt)
             self._reflow_fields(force=True)
+
+    def _show_split_switch(self, nt):
+        can = nt is not None and _can_split_cards(nt)
+        self.split_row.setVisible(can)
+        if not can:
+            return
+        self.split_cb.blockSignals(True)
+        self.split_cb.setChecked(_split_cards(nt))
+        self.split_cb.blockSignals(False)
+        auto = _store.nt_option(nt["name"], "split") is None
+        self.split_hint.setText(_t("split_auto" if auto else "split_manual"))
+
+    def _on_split_toggled(self, checked):
+        nt = self._nt_shown
+        if nt is None:
+            return
+        # back to automatic when the choice equals what detection would pick
+        _store.set_nt_option(nt["name"], "split", None if checked == _split_auto(nt) else checked)
+        self._schedule_save()
+        self._show_notetype(nt["id"], getattr(self, "_nt_source_last", None))
 
     def _add_note_type_group(self, nt):
         table = macui.RoundedFrame("table", "box_border", 8)
@@ -2196,12 +2394,20 @@ class PDFExportDialog(QDialog):
             tl.addWidget(note)
             return
         saved = _store.get_fields(nt["name"])
+        owners = {}
+        if _split_cards(nt):
+            sets = _card_field_sets(nt)
+            for i, fields in enumerate(sets):
+                for name in fields:
+                    owners.setdefault(name, []).append(nt["tmpls"][i]["name"])
+            owners = {k: v for k, v in owners.items() if len(v) < len(sets)}  # shared: no hint
         columns = None
         rows = []
         for fld in sorted(nt["flds"], key=lambda f: f["ord"]):
             w = FieldConfigWidget(
                 fld["name"], is_front=_is_front_field(fld["name"]),
-                nt_id=nt["id"], nt_name=nt["name"], config=saved.get(fld["name"]))
+                nt_id=nt["id"], nt_name=nt["name"], config=saved.get(fld["name"]),
+                card_hint=", ".join(owners.get(fld["name"], [])))
             w.changed.connect(lambda w=w: self._on_field_changed(w))
             tl.addWidget(w)
             w.finalize_columns()
@@ -3275,6 +3481,7 @@ class PDFExportDialog(QDialog):
             "high_contrast": self.high_contrast_cb.isChecked(),
             "qa_layout": self.qa_combo.currentIndex(),
             "cloze_mode": self.cloze_combo.currentIndex(),
+            "cloze_color": self.cloze_color_combo.currentIndex(),
             "io_mode": self.io_combo.currentIndex(),
             "order": self.order_combo.currentIndex(),
             "page_numbers": self.page_numbers_cb.isChecked(),
@@ -3317,6 +3524,7 @@ class PDFExportDialog(QDialog):
             self.high_contrast_cb.setChecked(s["high_contrast"])
             self._set_combo(self.qa_combo, s["qa_layout"])
             self._set_combo(self.cloze_combo, s["cloze_mode"])
+            self._set_combo(self.cloze_color_combo, s["cloze_color"])
             self._set_combo(self.io_combo, s["io_mode"])
             self._set_combo(self.order_combo, s["order"])
             self.page_numbers_cb.setChecked(s["page_numbers"])
@@ -3341,7 +3549,7 @@ class PDFExportDialog(QDialog):
                    self.padding_spin, self.gap_spin, self.lh_spin, self.img_h_spin):
             sp.valueChanged.connect(sched)
         for combo in (self.font_combo, self.page_combo, self.card_style_combo, self.qa_combo,
-                      self.cloze_combo, self.io_combo, self.order_combo):
+                      self.cloze_combo, self.cloze_color_combo, self.io_combo, self.order_combo):
             combo.currentIndexChanged.connect(sched)
         self.order_combo.currentIndexChanged.connect(lambda *_: None)
         self.lang_combo.currentIndexChanged.connect(self._on_language_changed)
@@ -3557,6 +3765,9 @@ class PDFExportDialog(QDialog):
 
         io_max_h = int(max(200, (page_h_px - top_mg_px * 2) * 0.62))
         cz_color = ["#2563eb", "#60a5fa", "#1d4ed8"][theme_idx if 0 <= theme_idx < 3 else 0]
+        cz_pick = self.cloze_color_combo.currentIndex()
+        if 0 < cz_pick <= len(CLOZE_COLORS):  # a colour of choice instead of the theme accent
+            cz_color = CLOZE_COLORS[cz_pick - 1][2 if theme_idx == 1 else 1]
         link = ["#1d63d8", "#7fb3ff", "#1d4ed8"][theme_idx if 0 <= theme_idx < 3 else 0]
         link_line = ["rgba(29,99,216,.35)", "rgba(127,179,255,.4)", "rgba(29,78,216,.35)"][
             theme_idx if 0 <= theme_idx < 3 else 0]
@@ -3575,6 +3786,13 @@ class PDFExportDialog(QDialog):
             ".io-poly.io-m polygon{fill:#ffeba2;stroke:#212121;stroke-width:.006}"
             ".io-poly.io-o polygon{fill:none;stroke:#e0482c;stroke-width:.008;"
             "stroke-dasharray:.03 .02}"
+            # an inline-block's baseline is its bottom edge, so the wrapper's vertical-align
+            # puts the formula's own baseline on the text baseline
+            ".mj{display:inline-block;line-height:0;text-indent:0}"
+            # the card-image rule svg{margin:3px 0} must not pad formulas: it lifted them 3px
+            ".mj svg{display:block!important;margin:0!important;overflow:visible}"
+            ".mj-display{display:block;text-align:center;margin:.4em 0;break-inside:avoid}"
+            ".mj-block svg{max-width:100%}"
             ".cz-a{font-weight:700;color:" + cz_color + ";border-bottom:1.5px solid " + cz_color + "}"
             ".cz-h{display:inline-block;min-width:3.2em;text-align:center;font-weight:700;"
             "color:" + cz_color + ";border-bottom:1.5px solid " + cz_color + ";line-height:1.1}"
@@ -4238,11 +4456,13 @@ class PDFExportDialog(QDialog):
             return (rs_section("sec-q", "rendered_front", q) if q else "",
                     rs_section("sec-a", "rendered_back", a) if a else "")
 
-        def fields_entry(fields_by_name, nt, fc_nt):
+        def fields_entry(fields_by_name, nt, fc_nt, only=None):
             czm = cloze_mode if cloze_mode != 3 else 0
             sq, sa, sx, revealed_copies = [], [], [], []
             for fld in sorted(nt["flds"], key=lambda f: f["ord"]):
                 fname = fld["name"]
+                if only is not None and fname not in only:
+                    continue
                 conf = fc_nt.get(fname) or _auto_field_config(fname)
                 if not conf["export"]:
                     continue
@@ -4280,6 +4500,7 @@ class PDFExportDialog(QDialog):
             return q_html, a_html
 
         fc = self._collect_fc()
+        split_sets = {}
         for cid in card_ids:
             try:
                 card = mw.col.get_card(cid)
@@ -4299,14 +4520,24 @@ class PDFExportDialog(QDialog):
                     q_html, a_html = native_entry(card, note, nt)
                     img_px = None
                 else:
-                    if note.id in seen:
+                    split = not cards_style and _split_cards(nt)
+                    key = (note.id, card.ord, "card") if split else note.id
+                    if key in seen:
                         continue
-                    seen.add(note.id)
+                    seen.add(key)
                     if cards_style:
                         pair = cloze_entry(fields_by_name, nt, cloze_mode)
                         q_html, a_html = pair if pair else ("", "")
                     else:
-                        q_html, a_html = fields_entry(fields_by_name, nt, fc.get(nt["id"], {}))
+                        only = None
+                        if split:  # this card type's fields + fields no template uses
+                            sets = split_sets.get(nt["id"])
+                            if sets is None:
+                                sets = split_sets[nt["id"]] = _card_field_sets(nt)
+                            used = set().union(*sets)
+                            own = sets[card.ord] if card.ord < len(sets) else used
+                            only = own | ({f["name"] for f in nt["flds"]} - used)
+                        q_html, a_html = fields_entry(fields_by_name, nt, fc.get(nt["id"], {}), only)
                     img_px = None
                 if add_entry(nt["name"], q_html, a_html, img_px):
                     cards_ok += 1
@@ -4588,6 +4819,16 @@ class PDFExportDialog(QDialog):
             label = " \u00b7 ".join([generator] + [k if len(k) <= 60 else k[:59] + "\u2026" for k in kinds])
             result = result.replace("__PDFFER_GENERATOR__",
                                     label.replace("\\", "").replace('"', "'"), 1)
+        if mathsvg.has_math(result):
+            if not mathsvg.available():
+                logger.log("MathJax: bundled MathJax missing, formulas stay as TeX")
+            else:
+                if hasattr(self, "busy_overlay_label") and self.busy_hud.isVisible():
+                    self._set_busy_message(_t("busy_math"))
+                result, math_ok, math_bad = mathsvg.typeset(result)
+                logger.log("MathJax: {} formula(s) drawn{}".format(
+                    math_ok, ", {} left as TeX (MathJax could not read them)".format(math_bad)
+                    if math_bad else ""))
         logger.log("OK: {}, skip: {}".format(cards_ok, cards_skip))
         logger.log("Img OK: {}, fail: {}".format(img_ok[0], img_fail[0]))
         return result, card_ids

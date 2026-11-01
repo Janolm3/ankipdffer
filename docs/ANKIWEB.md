@@ -8,6 +8,13 @@ Open source on GitHub (screenshots, full documentation, changelog):
 
 [Buy Me a Coffee](https://buymeacoffee.com/janolm)
 
+## New in 1.4.3
+
+- **Filter builder** — quick filters in the search field and a rule editor with a live card count.
+- **MathJax formulas** are drawn as sharp vector graphics, inline with the text.
+- **One box per card type** for note types whose cards show different fields (e.g. Question 1 / Question 2 with a shared Context).
+- **Cloze colour** of your choice for revealed answers.
+
 ## New in 1.4.2
 
 - **Export to PDF button on the deck screen** — right below *Study Now*, opens AnkiPdffer on that deck (can be hidden in Settings).

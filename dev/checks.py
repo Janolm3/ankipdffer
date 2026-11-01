@@ -384,7 +384,7 @@ def check_141(col, load_addon, pick):
     ok(footer.startswith("AnkiPdffer 1.4.") and footer.split(" \u00b7 ")[1] == "WeasyPrint"
        and footer.split(" \u00b7 ")[2] == "Fields", "footer: version, engine, then render mode ({})".format(footer))
     fb_html = dlg._build_html(mode="pdf_fallback")[0]
-    ok("1.4.2 \u00b7 Qt WebEngine \u00b7 Fields" in fb_html, "Qt fallback footer names its engine")
+    ok(mod._addon_version() + " \u00b7 Qt WebEngine \u00b7 Fields" in fb_html, "Qt fallback footer names its engine")
     ok(".fv{font-size:inherit;orphans" in html and "overflow:hidden}" not in html.split(".fv{", 1)[1][:80],
        "fields no longer clip overflowing content")
 
@@ -448,6 +448,15 @@ def check_141(col, load_addon, pick):
         time.sleep(0.05)
     ok(mod._store.settings["engine_state"] in ("ok", "missing") and "engine_state" in mod.MACHINE_KEYS,
        "check result remembered for the next session ({})".format(mod._store.settings["engine_state"]))
+    for state in ("ok", "missing"):  # 1.4.2 crashed building the window once a state was stored
+        mod._store.update_settings({"engine_state": state})
+        try:
+            fresh = mod.PDFExportDialog(mw)
+            ok(mod._t("engine_ok" if state == "ok" else "engine_missing") in fresh.engine_status.text(),
+               "a new window opens with the remembered engine state ({})".format(state))
+            fresh.deleteLater()
+        except Exception as e:
+            ok(False, "a new window opens with the remembered engine state ({}): {!r}".format(state, e))
     css = mod.macui.stylesheet(False)
     ok(dlg.reset_btn.objectName() == "Destructive" and "QPushButton#Destructive {" not in css
        and "background: #bf5a54" in css.split("QPushButton#Destructive:hover {", 1)[1][:80],
@@ -660,6 +669,163 @@ def check_windows(col, load_addon, pick):
     shutil.rmtree(stage, ignore_errors=True)
 
 
+def check_143(col, load_addon, pick):
+    print("1.4.3: cloze colour, one box per card type, MathJax, filter builder")
+    app, mw, mod, stage = load_addon(col)
+    models = col.models
+
+    # ---- a note type like the one in the user report: 7 fields, 2 card types, shared Context
+    nt = models.by_name("Dual QA")
+    if nt is None:
+        nt = models.new("Dual QA")
+        for name in ("Context", "Question 1", "Answer 1", "Extra 1", "Question 2", "Answer 2", "Extra 2"):
+            models.add_field(nt, models.new_field(name))
+        for i in (1, 2):
+            t = models.new_template("Card {}".format(i))
+            t["qfmt"] = "{{Context}}<br>{{Question %d}}" % i
+            t["afmt"] = "{{FrontSide}}<hr id=answer>{{Answer %d}}{{#Extra %d}}<br>{{Extra %d}}{{/Extra %d}}" % (i, i, i, i)
+            models.add_template(nt, t)
+        models.add(nt)
+        nt = models.by_name("Dual QA")
+        did = col.decks.id("Lab::Dual")
+        note = col.new_note(nt)
+        note["Context"] = "CTX-shared"
+        note["Question 1"] = "What is the HHI?"
+        note["Answer 1"] = "ANS-ONE market concentration"
+        note["Question 2"] = "Term for market concentration?"
+        note["Answer 2"] = "ANS-TWO Herfindahl-Hirschman Index"
+        col.add_note(note, did)
+        rev = models.by_name("Basic (and reversed card)")
+        n2 = col.new_note(rev)
+        n2["Front"], n2["Back"] = "REV-front", "REV-back"
+        col.add_note(n2, did)
+        math = col.new_note(models.by_name("Basic"))
+        math["Front"] = r"Gas law \(pV = nRT\)"
+        math["Back"] = r"\[\frac{a}{b}\]"
+        col.add_note(math, col.decks.id("Lab::Math"))
+    ok(mod._card_field_sets(nt)[0] == {"Context", "Question 1", "Answer 1", "Extra 1"},
+       "card type 1 shows Context + its own fields (read from the template)")
+    ok(mod._split_auto(nt) and not mod._split_auto(models.by_name("Basic (and reversed card)"))
+       and not mod._split_auto(models.by_name("Cloze")),
+       "split only when card types show different fields (not Basic+reversed, not Cloze)")
+
+    dlg = mod.PDFExportDialog(mw)
+    dlg._apply_settings(mod.DEFAULT_SETTINGS)
+    pick(dlg, "Lab::Dual")
+    html = dlg._build_html(mode="pdf")[0]
+    boxes = re.findall(r'<div class="card[^"]*"[^>]*data-u="\d+">(.*?)(?=<div class="card|</body>)', html, re.S)
+    dual = [b for b in boxes if "CTX-shared" in b]
+    ok(len(dual) == 2, "the dual note gives two boxes ({})".format(len(dual)))
+    ok(len(dual) == 2 and "ANS-ONE" in dual[0] and "ANS-TWO" not in dual[0]
+       and "ANS-TWO" in dual[1] and "ANS-ONE" not in dual[1],
+       "each box holds only its card type's fields, Context in both")
+    ok(sum("REV-front" in b for b in boxes) == 1, "Basic (and reversed) stays one box per note")
+    dlg.nt_combo.setCurrentIndex(dlg.nt_combo.findData(nt["id"]))
+    dlg._on_notetype_picked(dlg.nt_combo.currentIndex())
+    hints = [w.card_label.text() for w in dlg.field_widgets if w.card_label is not None]
+    ok(dlg.split_row.isVisibleTo(dlg.fields_tab) and dlg.split_cb.isChecked() and hints.count("Card 1") == 3,
+       "Fields tab shows the switch and which card type a field belongs to ({})".format(hints))
+    dlg.split_cb.setChecked(False)
+    html = dlg._build_html(mode="pdf")[0]
+    ok(html.count("CTX-shared") == 1 and mod._store.nt_option("Dual QA", "split") is False,
+       "switched off: one box per note again, choice remembered")
+    dlg.split_cb.setChecked(True)
+    ok(mod._store.nt_option("Dual QA", "split") is None, "switching back to the detected value = automatic")
+
+    # ---- cloze colour
+    pick(dlg, "Pharma::Cardio")
+    dlg.cloze_color_combo.setCurrentIndex(1)
+    html = dlg._build_html(mode="pdf")[0]
+    ok(".cz-a{font-weight:700;color:#d93a30" in html, "cloze answers in the chosen colour")
+    dlg.theme_radio.setCurrentIndex(1)
+    ok(".cz-a{font-weight:700;color:#ff6b61" in dlg._build_html(mode="pdf")[0], "lighter variant on dark pages")
+    dlg._apply_settings(mod.DEFAULT_SETTINGS)
+    ok(dlg.cloze_color_combo.currentIndex() == 0, "default: theme colour")
+
+    # ---- MathJax
+    pick(dlg, "Lab::Math")
+    html = dlg._build_html(mode="pdf")[0]
+    ok(html.count('<span class="mj"') + html.count('<span class="mj mj-block"') == 2 and html.count("<svg") >= 2
+       and "\\(" not in html.split("<body", 1)[1], "inline and display TeX become vector SVG")
+    ok('class="mj mj-block"' in html and re.search(r'<span class="mj" style="vertical-align:-0\.\d+em"><svg', html)
+       and 'style="vertical-align' not in html.split('<span class="mj"', 1)[1].split("<svg", 1)[1][:600],
+       "inline formula: baseline shift on the wrapper (WeasyPrint ignores it on <svg>), sizes in em")
+    ok(".mj svg{display:block!important;margin:0!important" in html,
+       "card-image svg margins do not pad formulas (they lifted them off the baseline)")
+
+    # ---- filters: every property gives a search Anki accepts
+    F = mod.filters
+    esc = F.Escaper(col)
+    rules = []
+    for key, _, kind in F.CRITERIA:
+        for op in F.OPS[kind]:
+            r = F.default_rule(key)
+            r["op"] = op
+            if key == "tag":
+                r["value"] = "my_tag*"
+            elif key == "notetype":
+                r["value"] = "Basic (and reversed card)"
+            elif key == "template":
+                r["value"] = "Card 1"
+            elif kind in ("field", "text"):
+                r["value"], r["extra"] = 'a "quoted" * text', "Front"
+            elif key == "custom":
+                r["value"] = "is:due OR tag:x"
+            elif key == "rated":
+                r["extra"] = "1"
+            rules.append(r)
+    bad = []
+    for r in rules:
+        q = F.term(r, esc)
+        try:
+            col.find_cards(q)
+        except Exception as e:
+            bad.append((q, str(e)[:60]))
+        if not q:
+            bad.append((r["prop"], r["op"], "empty"))
+    ok(not bad, "{} conditions -> valid Anki searches {}".format(len(rules), bad[:3]))
+    ok(F.term({"prop": "tag", "op": "has", "value": "my_tag"}, esc) == "tag:my\\_tag",
+       "wildcards in names are escaped")
+    ok(F.term({"prop": "flag", "op": "is", "value": "any"}, esc) == "-flag:0"
+       and F.term({"prop": "ease", "op": "lt", "num": 200}, esc) == "prop:ease<2"
+       and F.term({"prop": "fsrs_r", "op": "lt", "num": 80}, esc) == "prop:r<0.8"
+       and F.term({"prop": "due", "op": "overdue"}, esc) == "prop:due<0",
+       "flags, percentages and due dates map to Anki's syntax")
+    q = F.build_query([F.default_rule("state"), dict(F.default_rule("tag"), value="x")], False, esc)
+    ok(q == "is:due OR tag:x", "match any -> OR ({})".format(q))
+    ok(F.add_term_to("is:due OR is:new", "tag:x") == "(is:due OR is:new) tag:x"
+       and F.add_term_to("tag:x", "tag:x") == "tag:x", "quick terms are ANDed and not repeated")
+    missing = sorted({k for k, _, _ in F.CRITERIA for k in ["flt_p_" + k]} - set(mod._STRINGS["en"]))
+    missing += sorted({"flt_o_" + op for ops in F.OPS.values() for op in ops} - set(mod._STRINGS["en"]))
+    ok(not missing, "every property and condition has a label ({})".format(missing[:4]))
+
+    pick(dlg, "Lab::Dual")
+    dlg._load_fields()
+    menu = mod.QMenu(dlg)
+    added = []
+    F.fill_quick_menu(menu, dlg._filter_context(), mod._t, added.append, lambda: None, lambda: None)
+    titles = [a.text() for a in menu.actions()]
+    ok(titles[0] == mod._t("btn_build_filter") and len([a for a in menu.actions() if a.menu()]) >= 6,
+       "quick menu: builder first, then submenus ({})".format(len(titles)))
+    builder = F.FilterBuilderDialog(dlg, dlg._filter_context(), mod._t, "Lab::Dual",
+                                    [F.default_rule("state"), dict(F.default_rule("notetype"), value="Dual QA")])
+    builder.refresh()
+    ok(builder.query == 'is:due "note:Dual QA"' or builder.query == "is:due note:Dual QA" or builder.query.startswith("is:due "),
+       "builder joins its rows ({})".format(builder.query))
+    builder.rows[0].prop.setCurrentIndex(builder.rows[0].prop.findData("added"))
+    builder.refresh()
+    ok(builder.query.startswith("added:7") and mod._t("deck_count").split("{")[0] in builder.count_label.text() or
+       builder.count_label.property("error") is False, "changing a property rebuilds the row ({})".format(builder.query))
+    builder.add_row(after=builder.rows[0])
+    ok(len(builder.rows) == 3, "+ adds a row")
+    builder.remove_row(builder.rows[1])
+    ok(len(builder.rows) == 2, "− removes it")
+    builder.rows[1].value.setCurrentIndex(0) if hasattr(builder.rows[1].value, "setCurrentIndex") else None
+    builder.reject()
+    dlg.close()
+    shutil.rmtree(stage, ignore_errors=True)
+
+
 def run_checks(col, load_addon, pick):
     check_html(col, load_addon, pick)
     check_store(col, load_addon, pick)
@@ -670,6 +836,7 @@ def run_checks(col, load_addon, pick):
     check_141(col, load_addon, pick)
     check_overview_button(col, load_addon, pick)
     check_windows(col, load_addon, pick)
+    check_143(col, load_addon, pick)
     print("\n{} check(s) failed".format(len(FAILS)) if FAILS else "\nall checks passed")
     for f in FAILS:
         print("  - " + f)
