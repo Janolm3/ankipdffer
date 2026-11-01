@@ -5,7 +5,8 @@ AnkiPdffer turns flashcards into readable documents for printing, offline study,
 Open source on GitHub (screenshots, full documentation, changelog):
 
 [github.com/Janolm3/ankipdffer](https://github.com/Janolm3/ankipdffer)
-([Buy Me a Coffee](https://buymeacoffee.com/janolm))
+
+[Buy Me a Coffee](https://buymeacoffee.com/janolm)
 
 ## New in 1.4.0
 
