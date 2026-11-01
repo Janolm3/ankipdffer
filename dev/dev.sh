@@ -23,7 +23,7 @@ ANKI_APP="${ANKI_APP:-/Applications/Anki.app/Contents/MacOS/Anki}"
 EXCLUDES=(
   --exclude ".git" --exclude ".gitignore" --exclude "dev/" --exclude "dist/" --exclude "docs/"
   --exclude "__pycache__/" --exclude "*.pyc" --exclude ".DS_Store"
-  --exclude "settings.json" --exclude "meta.json" --exclude "last_export_log.txt"
+  --exclude "settings.json" --exclude "meta.json" --exclude "last_export_log.txt" --exclude "user_files/"
 )
 
 # PIDs of Anki processes started on the sandbox base folder (not your regular Anki)
