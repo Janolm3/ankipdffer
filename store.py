@@ -52,11 +52,12 @@ DEFAULT_SETTINGS = {
     "order": 0,           # 0 deck order, 1 creation date, 2 shuffle
     "page_numbers": False,
     "tab": 0,             # last tab shown in the window
+    "export_dir": "",     # folder of the last export ("" = Desktop)
 }
 
 # Options that describe *this machine / session* rather than the look of an export.
 # They are not part of presets and are left alone by "apply preset".
-MACHINE_KEYS = ("language", "debug", "tab")
+MACHINE_KEYS = ("language", "debug", "tab", "export_dir")
 
 DEFAULT_FIELD_CONFIG = {
     "export": True,

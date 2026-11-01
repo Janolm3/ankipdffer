@@ -332,13 +332,13 @@ class ExportLogger:
 
 
 logger = ExportLogger()
-EXPORT_BUILD = "1.4.0-20261101"
+EXPORT_BUILD = "1.4.1-20261101"
 TOOL_NAME = "AnkiPdffer"
 TOOL_URL = "https://ankiweb.net/shared/info/1987190048"
 TOOL_URL_DISPLAY = "ankiweb.net/shared/info/1987190048"
 
 
-def _addon_version(default="1.4.0"):
+def _addon_version(default="1.4.1"):
     try:
         manifest_path = os.path.join(os.path.dirname(__file__), "manifest.json")
         with open(manifest_path, "r", encoding="utf-8") as f:
@@ -346,6 +346,122 @@ def _addon_version(default="1.4.0"):
         return manifest.get("human_version", default)
     except Exception:
         return default
+
+
+# Runs inside the isolated WeasyPrint process (see _export_pdf_via_weasyprint). Cards start as
+# unbreakable; after each render, a card that was pushed to the next page while leaving more than
+# `gap_ratio` of the previous page empty is allowed to continue across the break (only between
+# fields, never inside one), and the document is rendered again. Cards that WeasyPrint had to split
+# anyway (taller than a page) are marked too, so they flow instead of being clipped.
+_LAYOUT_PASS_SCRIPT = """
+    def write_optimised(HTML, html_path, pdf_path, layout_json):
+        import re as _re
+        try:
+            layout = json.loads(layout_json or '{}')
+        except Exception:
+            layout = {}
+        ratio = float(layout.get('gap_ratio') or 0)
+        min_card = float(layout.get('min_split') or 0)
+        with open(html_path, encoding='utf-8') as fh:
+            source = fh.read()
+        base = os.path.dirname(html_path)
+
+        def render(markup):
+            return HTML(string=markup, base_url=base).render()
+
+        def pages_of(doc):
+            out = []
+            for page in doc.pages:
+                pb = page._page_box
+                top = pb.content_box_y()
+                cards = []
+                stack = [pb]
+                while stack:
+                    b = stack.pop()
+                    el = getattr(b, 'element', None)
+                    uid = el.get('data-u') if el is not None and hasattr(el, 'get') else None
+                    if uid is not None:
+                        # where the card's own content ends inside this fragment (text, images):
+                        # a split fragment's frame always runs to the bottom of the page
+                        inner, leaves = b.position_y, list(getattr(b, 'children', None) or [])
+                        while leaves:
+                            leaf = leaves.pop()
+                            kids = getattr(leaf, 'children', None)
+                            if kids:
+                                leaves.extend(kids)
+                            else:
+                                inner = max(inner, leaf.position_y + leaf.margin_height())
+                        cards.append((b.position_y, b.position_y + b.margin_height(), uid,
+                                      el.get('data-keep') == '1', inner))
+                        continue
+                    stack.extend(getattr(b, 'children', None) or [])
+                cards.sort()
+                out.append((top, top + pb.height, cards))
+            return out
+
+        def stats(pages):
+            where = {}
+            for i, (_, _, cards) in enumerate(pages):
+                for c in cards:
+                    where.setdefault(c[2], []).append(i)
+            split = {u for u, p in where.items() if len(set(p)) > 1}
+            gaps = [(bottom - max(c[1] for c in cards)) / (bottom - top)
+                    for top, bottom, cards in pages[:-1] if cards]
+            return split, gaps
+
+        def wasted_frames(pages, split, motive):
+            # A split card's first part is framed down to the page end. Keep the split only if
+            # that empty frame is clearly smaller than the gap it was meant to fill.
+            seen, bad = set(), set()
+            for top, bottom, cards in pages:
+                for c in cards:
+                    if c[2] in split and c[2] in motive and c[2] not in seen:
+                        seen.add(c[2])
+                        if (c[1] - c[4]) / (bottom - top) > motive[c[2]] - ratio:
+                            bad.add(c[2])
+            return bad
+
+        def with_marks(marked):
+            def sub(m):
+                cls = m.group(2)
+                if m.group(5) in marked and 'split-ok' not in cls:
+                    cls += ' split-ok'
+                return m.group(1) + cls + m.group(3) + m.group(4)
+            return _re.sub(r'(<div class=")(card[^"]*)(")([^>]*?\\bdata-u="(\\d+)")', sub, source)
+
+        doc = render(source)
+        marked, blocked, motive, renders = set(), set(), {}, 1
+        while ratio > 0 and renders < int(layout.get('max_renders') or 3):
+            pages = pages_of(doc)
+            split, _ = stats(pages)
+            bad = wasted_frames(pages, split, motive) & marked
+            new = set()
+            for i in range(len(pages) - 1):
+                top, bottom, cards = pages[i]
+                if not cards or bottom - max(c[1] for c in cards) <= ratio * (bottom - top):
+                    continue
+                ntop, _, ncards = pages[i + 1]
+                here = {c[2] for c in cards}
+                first = next((c for c in ncards if c[2] not in here), None)
+                if not first or first[3] or first[0] - ntop >= 3 or first[2] in marked | blocked:
+                    continue
+                # short cards are never cut: moving them whole wastes at most their own height
+                if first[1] - first[0] > min_card * (bottom - top) or first[2] in split:
+                    new.add(first[2])
+                    motive[first[2]] = (bottom - max(c[1] for c in cards)) / (bottom - top)
+            if not new and not bad:
+                break
+            blocked |= bad
+            marked = (marked | new) - blocked
+            doc = render(with_marks(marked))
+            renders += 1
+        split, gaps = stats(pages_of(doc))
+        print('Layout: {} pages, {} of {} cards continue on the next page, {:.0%} average empty, '
+              '{} render pass(es), gap limit {:.0%}'.format(
+                  len(doc.pages), len(split), source.count(' data-u="'),
+                  (sum(gaps) / len(gaps)) if gaps else 0, renders, ratio), flush=True)
+        doc.write_pdf(pdf_path)
+"""
 
 
 class CustomWebEnginePage(QWebEnginePage):
@@ -957,6 +1073,9 @@ class PDFExportDialog(QDialog):
         self.tab_box.finish()
         self.tabs = self.tab_box.tabs
         self.stack = self.tab_box.stack
+        self._engine_report = None
+        self.stack.currentChanged.connect(
+            lambda i: i == self.stack.count() - 1 and self._engine_report is None and self._check_engine())
         body = QVBoxLayout()
         body.setContentsMargins(20, 14, 20, 18)
         self.tab_box.setMinimumHeight(300)
@@ -1063,8 +1182,9 @@ class PDFExportDialog(QDialog):
         deck_lbl.setObjectName("ToolbarLabel")
         ly.addWidget(deck_lbl)
         self.deck_combo = QComboBox()
-        self.deck_combo.setMinimumWidth(130)
-        self.deck_combo.setMaximumWidth(240)
+        self.deck_combo.setMinimumWidth(160)
+        self.deck_combo.setMaximumWidth(300)
+        self.deck_combo.setMaxVisibleItems(24)
         self.deck_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.deck_combo.setToolTip(_t("deck_lbl").rstrip(":"))
         ly.addWidget(self.deck_combo, 2)
@@ -1072,8 +1192,9 @@ class PDFExportDialog(QDialog):
         chevron.setObjectName("Chevron")
         ly.addWidget(chevron)
         self.subdeck_combo = QComboBox()
-        self.subdeck_combo.setMinimumWidth(130)
-        self.subdeck_combo.setMaximumWidth(260)
+        self.subdeck_combo.setMinimumWidth(160)
+        self.subdeck_combo.setMaximumWidth(340)
+        self.subdeck_combo.setMaxVisibleItems(24)
         self.subdeck_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.subdeck_combo.setToolTip(_t("subdeck_lbl").rstrip(":"))
         ly.addWidget(self.subdeck_combo, 2)
@@ -1262,8 +1383,9 @@ class PDFExportDialog(QDialog):
         ly.addWidget(lbl)
         self.nt_combo = NoScrollComboBox()
         self.nt_combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.nt_combo.setMinimumWidth(180)
-        self.nt_combo.setMaximumWidth(320)
+        self.nt_combo.setMinimumWidth(200)
+        self.nt_combo.setMaximumWidth(460)
+        self.nt_combo.setMaxVisibleItems(24)
         self.nt_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.nt_combo.activated.connect(self._on_notetype_picked)
         ly.addWidget(self.nt_combo, 2)
@@ -1335,6 +1457,18 @@ class PDFExportDialog(QDialog):
         self.log_btn.clicked.connect(self._show_logs)
         self.debug_cb.toggled.connect(self.log_btn.setVisible)
         form.addRow(_t("grp_debug") + ":", self._hrow(self.debug_cb, 6, self.log_btn))
+
+        form.addRow(macui.separator())
+        self.engine_status = QLabel(_t("engine_checking"))
+        self.engine_status.setWordWrap(True)
+        self.engine_status.setMinimumWidth(300)
+        self.engine_status.setMaximumWidth(420)
+        form.addRow(_t("grp_engine") + ":", self.engine_status)
+        self.engine_check_btn = QPushButton(_t("btn_engine_check"))
+        self.engine_check_btn.clicked.connect(lambda: self._check_engine(force=True))
+        self.engine_setup_btn = QPushButton(_t("btn_engine_setup"))
+        self.engine_setup_btn.clicked.connect(self._open_engine_setup)
+        form.addRow("", self._hrow(self.engine_check_btn, self.engine_setup_btn))
 
         form.addRow(macui.separator())
         self.reset_btn = QPushButton(_t("btn_reset_all"))
@@ -1426,6 +1560,77 @@ class PDFExportDialog(QDialog):
         self._count_timer.stop()
         self._update_count()
 
+    # -------------------------------------------------------- PDF engine
+    def _engine_probe(self):
+        """Blocking (run in a thread): the parts WeasyPrint needs and whether it actually loads."""
+        def first(*paths):
+            return next((p for p in paths if p and os.path.exists(p)), None)
+
+        report = {
+            "macos": sys.platform == "darwin",
+            "brew": first(shutil.which("brew"), "/opt/homebrew/bin/brew", "/usr/local/bin/brew"),
+            "python": first("/opt/homebrew/opt/python@3.14/bin/python3.14",
+                            "/usr/local/opt/python@3.14/bin/python3.14", shutil.which("python3.14")),
+            "pango": bool(first("/opt/homebrew/lib/libpango-1.0.0.dylib",
+                                "/usr/local/lib/libpango-1.0.0.dylib")),
+        }
+        self._weasy_python_cache = None
+        logs = []
+        try:
+            report["engine"] = self._find_weasy_python(logs)
+        except Exception as e:
+            logs.append(str(e))
+            report["engine"] = None
+        report["logs"] = logs
+        return report
+
+    def _check_engine(self, force=False, then=None):
+        """Refresh the engine status without blocking the window (the probe imports WeasyPrint)."""
+        callbacks = self.__dict__.setdefault("_engine_callbacks", [])
+        if then:
+            callbacks.append(then)
+        if getattr(self, "_engine_thread", None) is not None:
+            return  # a check is already running; its result goes to every waiting caller
+        self.engine_status.setText(_t("engine_checking"))
+        self.engine_check_btn.setEnabled(False)
+        box = {}
+
+        def work():
+            box["report"] = self._engine_probe()
+
+        self._engine_thread = threading.Thread(target=work, daemon=True)
+        self._engine_thread.start()
+
+        def poll():
+            if "report" not in box:
+                QTimer.singleShot(150, poll)
+                return
+            self._engine_thread = None
+            self._engine_report = box["report"]
+            self.engine_check_btn.setEnabled(True)
+            self._show_engine_status()
+            waiting, self._engine_callbacks = self._engine_callbacks, []
+            for callback in waiting:
+                callback(self._engine_report)
+
+        QTimer.singleShot(150, poll)
+
+    def _show_engine_status(self):
+        r = self._engine_report or {}
+        if r.get("engine"):
+            self.engine_status.setText("\u25cf  " + _t("engine_ok"))
+            self.engine_status.setStyleSheet("color: #28a745;")
+        else:
+            self.engine_status.setText("\u25cb  " + _t(
+                "engine_missing" if r.get("macos", True) else "eng_unsupported"))
+            self.engine_status.setStyleSheet("")
+        self.engine_setup_btn.setEnabled(bool(r.get("macos", True)))
+
+    def _open_engine_setup(self):
+        dlg = EngineSetupDialog(self)
+        dlg.exec()
+        self._check_engine(force=True)
+
     def _create_busy_overlay(self):
         """HUD-style progress panel shown over the window while exporting."""
         self.busy_overlay = QFrame(self)
@@ -1435,7 +1640,16 @@ class PDFExportDialog(QDialog):
         overlay_ly.setContentsMargins(0, 0, 0, 0)
         overlay_ly.addStretch()
 
-        self.busy_panel = macui.RoundedFrame("hud", None, 14, self.busy_overlay)
+        # The progress panel is its own small floating window: it stays in front of the export
+        # window (and of Anki) for the whole job, even if the user clicks elsewhere meanwhile.
+        self.busy_hud = QWidget(self, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
+                                | Qt.WindowType.WindowStaysOnTopHint)
+        self.busy_hud.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.busy_hud.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.busy_hud.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow, True)
+        hud_ly = QVBoxLayout(self.busy_hud)
+        hud_ly.setContentsMargins(0, 0, 0, 0)
+        self.busy_panel = macui.RoundedFrame("hud", None, 14, self.busy_hud)
         self.busy_panel.setObjectName("BusyPanel")
         self.busy_panel.setMinimumWidth(280)
         panel_ly = QVBoxLayout(self.busy_panel)
@@ -1459,17 +1673,27 @@ class PDFExportDialog(QDialog):
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         panel_ly.addWidget(hint)
 
-        overlay_ly.addWidget(self.busy_panel, 0, Qt.AlignmentFlag.AlignCenter)
+        hud_ly.addWidget(self.busy_panel)
         overlay_ly.addStretch()
         self.busy_overlay.setVisible(False)
+        self.busy_hud.setVisible(False)
         self._position_busy_overlay()
 
     def _position_busy_overlay(self):
         if hasattr(self, "busy_overlay"):
             self.busy_overlay.setGeometry(self.rect())
+        if hasattr(self, "busy_hud") and self.busy_hud.isVisible():
+            self.busy_hud.adjustSize()
+            centre = self.frameGeometry().center()
+            self.busy_hud.move(centre.x() - self.busy_hud.width() // 2,
+                               centre.y() - self.busy_hud.height() // 2)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._position_busy_overlay()
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
         self._position_busy_overlay()
 
     # ------------------------------------------------------------------ slots
@@ -1560,6 +1784,8 @@ class PDFExportDialog(QDialog):
                     display = parts[0]
                 self.subdeck_combo.addItem(display, d.name)
         self.subdeck_combo.blockSignals(False)
+        for combo in (self.deck_combo, self.subdeck_combo):
+            self._fit_popup_width(combo)
         want = getattr(self, "_want_sub", None)
         self._want_sub = None
         if want is None:
@@ -1573,6 +1799,13 @@ class PDFExportDialog(QDialog):
             if i >= 0:
                 self.subdeck_combo.setCurrentIndex(i)
         self._on_subdeck_changed()
+
+    @staticmethod
+    def _fit_popup_width(combo):
+        """Let the drop-down list be wider than the button so long deck names are readable."""
+        view = combo.view()
+        widest = max((view.sizeHintForColumn(0) if combo.count() else 0), combo.width())
+        view.setMinimumWidth(min(560, widest + 36))
 
     def _sel(self):
         d = self.subdeck_combo.currentData()
@@ -1684,6 +1917,7 @@ class PDFExportDialog(QDialog):
             self.nt_combo.insertSeparator(self.nt_combo.count())
         for x in others:
             self.nt_combo.addItem(x.name, x.id)
+        self._fit_popup_width(self.nt_combo)
         target, source = self._choose_notetype(deck_ids, [x.id for x in others])
         idx = self.nt_combo.findData(target) if target is not None else -1
         self.nt_combo.setCurrentIndex(idx)
@@ -2087,7 +2321,7 @@ class PDFExportDialog(QDialog):
         candidates = ", ".join(info["families"]) if info["families"] else "(none)"
         logger.log("Font candidates [{}]: {}".format(mode, candidates))
         logger.log("Font import [{}]: Google Inter CSS {}".format(
-            mode, "included" if "'Inter'" in info["stack"] else "skipped"))
+            mode, "included" if info.get("label") == "Inter" else "skipped"))
         for match in self._qt_font_debug_matches(info["families"]):
             logger.log("Qt font [{}]: {}".format(mode, match))
 
@@ -2218,11 +2452,17 @@ class PDFExportDialog(QDialog):
         self.grid_cb.setEnabled(on)
 
     def _animate_busy(self):
-        self._busy_val = (self._busy_val + 2) % 101
+        self._busy_val = min(95.0, self._busy_val + (95.0 - self._busy_val) * 0.025)
         if hasattr(self, "busy_overlay_bar"):
-            self.busy_overlay_bar.setValue(self._busy_val)
+            self.busy_overlay_bar.setValue(int(self._busy_val))
         if hasattr(self, "busy_bar"):
-            self.busy_bar.setValue(self._busy_val)
+            self.busy_bar.setValue(int(self._busy_val))
+        if hasattr(self, "busy_hud") and self._busy_depth and self.isVisible() \
+                and not self.busy_hud.isVisible():
+            self.busy_hud.show()
+            self._position_busy_overlay()
+        if hasattr(self, "busy_hud") and self._busy_depth:
+            self.busy_hud.raise_()
         if hasattr(self, "busy_overlay_label"):
             self.busy_overlay_label.setText(self._base_busy_message or "")
 
@@ -2232,15 +2472,19 @@ class PDFExportDialog(QDialog):
         self.busy_wrap.setVisible(True)
         if hasattr(self, "busy_overlay"):
             self.busy_overlay_label.setText(message)
-            self._position_busy_overlay()
             self.busy_overlay.setVisible(True)
             self.busy_overlay.raise_()
+            self.busy_hud.show()
+            self.busy_hud.raise_()
+            self._position_busy_overlay()
         QApplication.processEvents()
 
     def _begin_busy(self, message):
         if self._busy_depth == 0:
             QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-            self._busy_val = 0
+            self._busy_val = 3.0
+            if self.isVisible():
+                self.raise_()
             if hasattr(self, "_busy_timer"):
                 self._busy_timer.start(80)
         self._busy_depth += 1
@@ -2259,6 +2503,8 @@ class PDFExportDialog(QDialog):
         self.busy_wrap.setVisible(False)
         if hasattr(self, "busy_overlay"):
             self.busy_overlay.setVisible(False)
+            self.busy_hud.setVisible(False)
+            self.busy_overlay_bar.setValue(0)
         self.busy_label.setText("")
         self._set_btns(True)
         try:
@@ -2313,31 +2559,47 @@ class PDFExportDialog(QDialog):
             self._end_busy(force=True)
 
     def _on_preview(self):
+        """Preview is the real PDF: same HTML, same engine and layout pass as Export, written to a
+        temporary file and opened. (An HTML mock-up paginated by estimates never matched.)"""
         if not self._precheck():
             return
+        dn = self._sel()
+        short = self._safe_filename(dn.split("::")[-1] if "::" in dn else dn)
+        path = os.path.join(tempfile.gettempdir(), "AnkiPdffer-preview-{}.pdf".format(short))
+        logger.start("Preview")
+        self._font_debug_logged_modes = set()
+        self._preview_pending = True
+        self._begin_busy(_t("busy_preview"))
         try:
-            self._begin_busy(_t("busy_preview"))
-            logger.start("Preview")
-            self._font_debug_logged_modes = set()
+            QApplication.processEvents()
             self._active_export_theme_index = self.theme_radio.currentIndex()
             logger.log("Build: {}".format(EXPORT_BUILD))
             logger.log("Theme: {} ({})".format(self._theme_name(), self._theme_index()))
-            html, card_ids = self._build_html(mode="preview")
-            self._set_busy_message(_t("busy_opening"))
-            fd, p = tempfile.mkstemp(suffix=".html", text=True)
+            html, card_ids = self._build_html(mode="pdf")
+            fd, self.temp_html_path = tempfile.mkstemp(suffix=".html", text=True)
             os.close(fd)
-            with open(p, "w", encoding="utf-8") as f:
+            with open(self.temp_html_path, "w", encoding="utf-8") as f:
                 f.write(html)
-            logger.finish()
             self._save_debug_artifacts("preview", card_ids, html)
-            QDesktopServices.openUrl(QUrl.fromLocalFile(p))
-            self._bring_to_front()
+            self._start_external_export(path)
         except Exception as e:
+            self._preview_pending = False
             logger.error("Preview", e)
             logger.finish()
+            self._save_debug_log()
             showWarning(str(e))
-        finally:
-            self._end_busy(force=True)
+            self._reset()
+
+    @staticmethod
+    def _export_dir():
+        """Where the save dialog starts: the last export folder, else Desktop (Anki's own working
+        directory is the disk root, which a regular user cannot write to)."""
+        home = os.path.expanduser("~")
+        for folder in (_store.settings.get("export_dir"), os.path.join(home, "Desktop"),
+                       os.path.join(home, "Documents"), home):
+            if folder and os.path.isdir(folder) and os.access(folder, os.W_OK):
+                return folder
+        return home
 
     def _on_export(self):
         if not self._precheck():
@@ -2346,11 +2608,17 @@ class PDFExportDialog(QDialog):
         short = self._safe_filename(dn.split("::")[-1] if "::" in dn else dn)
         uid = str(uuid.uuid4()).split('-')[0][:6]
         sp, _ = QFileDialog.getSaveFileName(
-            self, _t("dlg_save_pdf"), "{}_{}.pdf".format(short, uid), _t("pdf_filter"))
+            self, _t("dlg_save_pdf"), os.path.join(self._export_dir(), "{}_{}.pdf".format(short, uid)),
+            _t("pdf_filter"))
         if not sp:
             return
+        if not sp.lower().endswith(".pdf"):
+            sp += ".pdf"
+        _store.update_settings({"export_dir": os.path.dirname(sp)})
+        _store.save()
         logger.start("Export")
         self._font_debug_logged_modes = set()
+        self._preview_pending = False
         self._begin_busy(_t("busy_pdf_html"))
         self.export_btn.setText(_t("generating"))
         try:
@@ -2451,7 +2719,8 @@ class PDFExportDialog(QDialog):
         QTimer.singleShot(150, lambda: self._do_print(path))
 
     def _start_external_export(self, path):
-        self.export_btn.setText(_t("printing"))
+        if not getattr(self, "_preview_pending", False):
+            self.export_btn.setText(_t("printing"))
         self._set_busy_message(_t("busy_pdf_render"))
         self._external_export_result = None
         html_path = self.temp_html_path
@@ -2507,7 +2776,7 @@ class PDFExportDialog(QDialog):
         script = (
             "import json, os, shutil, subprocess, sys, tempfile\n"
             "from xml.sax.saxutils import escape\n"
-            "vendor_dir, html_path, pdf_path, font_json = sys.argv[1:5]\n"
+            "vendor_dir, html_path, pdf_path, font_json, layout_json = sys.argv[1:6]\n"
             "sys.path.insert(0, vendor_dir)\n"
             "try:\n"
             "    font_info = json.loads(font_json)\n"
@@ -2576,7 +2845,8 @@ class PDFExportDialog(QDialog):
             "        else:\n"
             "            font_log('no concrete font families in CSS stack')\n"
             "    from weasyprint import HTML\n"
-            "    HTML(filename=html_path, base_url=os.path.dirname(html_path)).write_pdf(pdf_path)\n"
+            + _LAYOUT_PASS_SCRIPT +
+            "    write_optimised(HTML, html_path, pdf_path, layout_json)\n"
             "finally:\n"
             "    if font_config_path:\n"
             "        try:\n"
@@ -2595,6 +2865,7 @@ class PDFExportDialog(QDialog):
                 command + [
                     "-I", "-B", "-c", script, vendor_dir, html_path, path,
                     json.dumps(font_debug, sort_keys=True),
+                    json.dumps(getattr(self, "_last_layout", None) or {}),
                 ],
                 capture_output=True,
                 text=True,
@@ -2706,10 +2977,13 @@ class PDFExportDialog(QDialog):
                 except OSError:
                     pass
                 setattr(self, attr, None)
+        preview = getattr(self, "_preview_pending", False)
+        self._preview_pending = False
         if success:
             QDesktopServices.openUrl(QUrl.fromLocalFile(path))
             self._bring_to_front()
-            showInfo(_t("msg_pdf_saved").format(path))
+            if not preview:
+                showInfo(_t("msg_pdf_saved").format(path))
 
     def _save_debug_log(self):
         try:
@@ -2860,6 +3134,8 @@ class PDFExportDialog(QDialog):
 
     def hideEvent(self, event):
         super().hideEvent(event)
+        if hasattr(self, "busy_hud"):
+            self.busy_hud.hide()  # a separate window: it does not hide with its owner
         self._flush_save()
 
     def closeEvent(self, event):
@@ -3009,10 +3285,19 @@ class PDFExportDialog(QDialog):
         font_import = (
             "@import url('https://fonts.googleapis.com/css2?"
             "family=Inter:wght@400;500;600;700;800&display=swap');"
-            if "'Inter'" in font else ""
+            if font_info.get("label") == "Inter" else ""  # System etc. only *list* Inter
         )
         page_numbers = self.page_numbers_cb.isChecked() and mode == "pdf"
-        bottom_mm = max(top_mg, 12) if page_numbers else top_mg
+        bottom_mm = max(top_mg, 12) if page_numbers else max(top_mg, 9)
+        generator = " \u00b7 ".join([
+            "{} {}".format(TOOL_NAME, _addon_version()),
+            re.sub(r"\s*\(.*\)", "", _t("source_cards" if render_mode == 1 else "source_fields")),
+            _t("layout_compact" if compact else "layout_standard"),
+        ])
+        generator_css = (
+            "@bottom-right{{content:\"__PDFFER_GENERATOR__\";font-family:{f};font-size:7px;color:{c};"
+            "opacity:.75}}".format(f=font, c=t["mut"])
+        )
         page_num_css = (
             "@bottom-center{{content:counter(page) ' / ' counter(pages);"
             "font-family:{f};font-size:9px;color:{c}}}".format(f=font, c=t["mut"])
@@ -3038,6 +3323,9 @@ class PDFExportDialog(QDialog):
 
         io_max_h = int(max(200, (page_h_px - top_mg_px * 2) * 0.62))
         cz_color = ["#2563eb", "#60a5fa", "#1d4ed8"][theme_idx if 0 <= theme_idx < 3 else 0]
+        link = ["#1d63d8", "#7fb3ff", "#1d4ed8"][theme_idx if 0 <= theme_idx < 3 else 0]
+        link_line = ["rgba(29,99,216,.35)", "rgba(127,179,255,.4)", "rgba(29,78,216,.35)"][
+            theme_idx if 0 <= theme_idx < 3 else 0]
         io_css_str = (
             ".io-wrap{position:relative;display:inline-block;line-height:0;max-width:100%}"
             ".io-wrap img{display:block;max-width:100%!important;height:auto!important;"
@@ -3107,19 +3395,26 @@ class PDFExportDialog(QDialog):
             ".sub{{text-align:center;color:{mut};font-size:{subsz}px;"
             "font-weight:500;margin:0 0 {subgap}px;letter-spacing:-.01em}}"
             ".card{{{card_extra}background:{card};margin-bottom:{gap}px!important;"
-            "break-inside:avoid;page-break-inside:avoid;overflow:hidden;display:block;width:100%}}"
-            ".card.long-card{{break-inside:auto;page-break-inside:auto;overflow:visible}}"
-            ".card.long-card .sec-q,.card.long-card .sec-a,.card.long-card .sec-x{{"
-            "break-inside:auto;page-break-inside:auto;overflow:visible}}"
+            "break-inside:avoid;page-break-inside:avoid;display:flow-root;width:100%;"
+            "box-decoration-break:clone;-webkit-box-decoration-break:clone}}"
+            # cards the layout pass allows to continue on the next page (never inside a field)
+            ".card.long-card,.card.split-ok{{break-inside:auto;page-break-inside:auto}}"
+            ".card.long-card .sec-q,.card.long-card .sec-a,.card.long-card .sec-x,"
+            ".card.split-ok .sec-q,.card.split-ok .sec-a,.card.split-ok .sec-x{{"
+            "break-inside:auto;page-break-inside:auto}}"
             ".cnum{{font-size:9px;font-weight:700;color:{mut};"
             "text-transform:uppercase;letter-spacing:.1em;padding:6px {padx}px 2px}}"
-            ".sec-q,.sec-a,.sec-x{{overflow:hidden}}"
+            ".sec-q,.sec-a,.sec-x{{display:block}}"
+            # a card never ends a page with only its header: number, question, divider and the
+            # field label all stay with what follows them
+            ".cnum,.sec-q,.sec-div,.fl{{break-after:avoid;page-break-after:avoid}}"
             ".sec-div{{height:0;border:none;border-top:1px solid {div};margin:0}}"
-            ".fb{{padding:{padh}px {padx}px}}"
+            ".fb{{padding:{padh}px {padx}px;break-inside:avoid;page-break-inside:avoid}}"
+            ".fb.fb-long{{break-inside:auto;page-break-inside:auto}}"
             ".fb+.fb{{border-top:1px solid {div}}}"
             ".fl{{font-size:{flsz}px;font-weight:600;color:{mut};"
             "text-transform:uppercase;letter-spacing:.06em;margin-bottom:1px}}"
-            ".fv{{font-size:inherit;overflow:hidden}}"
+            ".fv{{font-size:inherit;orphans:2;widows:2}}"
             ".fv *{{max-width:100%!important}}"
             ".fv p{{margin:0 0 .2em}}.fv p:last-child{{margin:0}}"
             ".fv ul,.fv ol{{margin:.15em 0;padding-left:1.3em}}"
@@ -3130,14 +3425,22 @@ class PDFExportDialog(QDialog):
             "padding:0;font-weight:700}}"
             ".fv h2{{font-size:1.05em;margin:0 0 .2em;font-weight:700}}"
             ".fv h3{{font-size:1em;margin:0 0 .15em;font-weight:600}}"
+            ".fv a,.rs a{{color:{link};text-decoration:none;border-bottom:1px solid {link_line}}}"
+            ".fv details,.rs details{{display:block;margin:.1em 0}}"
+            ".fv summary,.rs summary{{display:block;list-style:none;font-size:.8em;font-weight:600;"
+            "color:{mut};letter-spacing:.02em;margin:0 0 .15em}}"
+            ".fv summary::-webkit-details-marker,.rs summary::-webkit-details-marker{{display:none}}"
             "img{{max-width:100%!important;max-height:{img_h}px;width:auto!important;"
             "height:auto!important;"
             "object-fit:contain;margin:3px 0;border-radius:4px;display:inline-block;"
-            "vertical-align:top}}"
+            "vertical-align:top;break-inside:avoid;page-break-inside:avoid}}"
+            ".fv table,.rs table{{table-layout:fixed}}"
+            ".fv td img,.fv th img{{max-width:100%!important}}"
+            ".io-wrap{{break-inside:avoid;page-break-inside:avoid}}"
             "svg{{max-width:100%!important;height:auto!important;display:block;margin:3px 0}}"
             ".fv img:only-child{{margin:2px 0}}"
             "p:empty{{display:none}}div:empty{{display:none}}"
-            ".rs{{padding:{padh}px {padx}px;overflow:hidden}}"
+            ".rs{{padding:{padh}px {padx}px}}"
             ".rs *{{max-width:100%!important}}"
             ".rs .label{{font-size:{flsz}px;font-weight:600;color:{mut};"
             "text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px}}"
@@ -3161,7 +3464,7 @@ class PDFExportDialog(QDialog):
             h1sz=bsz + 8, acc=t["acc"], mut=t["mut"], titlegap=title_gap,
             subsz=bsz - 2, subgap=min_gap + 2,
             card_extra=card_extra, card=t["card"], gap=css_gap,
-            pad=pad, padh=padh, padx=pad + 2,
+            pad=pad, padh=padh, padx=pad + 2, link=link, link_line=link_line,
             div=t["div"], flsz=label_sz, brd=t["brd"], img_h=img_h,
             footer_margin=footer_margin, footer_pad=footer_pad,
             footer_sz=footer_sz, footer_max_w=footer_max_w_css,
@@ -3176,7 +3479,7 @@ class PDFExportDialog(QDialog):
         if mode == "pdf":
             wrapper_css = (
                 "@page{{size:{ps};margin:{top_mm:.2f}mm {mg_mm:.2f}mm {bot_mm:.2f}mm {mg_mm:.2f}mm;"
-                "background:{bg};{pnum}}}"
+                "background:{bg};{pnum}{gen}}}"
                 "{content}"
                 "html{{background-color:{bg}!important;min-height:100%;"
                 "-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}}"
@@ -3190,7 +3493,8 @@ class PDFExportDialog(QDialog):
                 ".page-content{{position:relative;z-index:1;display:flow-root}}"
                 "h1.doc-title{{margin-top:0}}"
             ).format(ps=ps, content=content_css, bg=t["body"],
-                     top_mm=top_mg, mg_mm=mg, bot_mm=bottom_mm, pnum=page_num_css)
+                     top_mm=top_mg, mg_mm=mg, bot_mm=bottom_mm, pnum=page_num_css,
+                     gen=generator_css)
 
         elif mode == "pdf_fallback":
             wrapper_css = (
@@ -3225,13 +3529,13 @@ class PDFExportDialog(QDialog):
                 "color:rgba(255,255,255,.4);font-size:10px;font-weight:600;"
                 "padding:0 10px;font-family:sans-serif;letter-spacing:.05em}}"
                 "@media print{{"
-                "@page{{size:{ps};margin:{mg}mm}}"
+                "@page{{size:{ps};margin:{mg_mm}mm}}"
                 "html,body{{background:{bg};padding:0}}"
                 ".page{{box-shadow:none;margin:0;width:100%;min-height:auto;padding:0}}"
                 ".page-break-marker{{display:none}}"
                 "}}"
             ).format(content=content_css, pw=page_w_px, ph=page_h_px,
-                     mg=mg_px, ps=ps, bg=t["body"])
+                     mg=mg_px, mg_mm=mg, ps=ps, bg=t["body"])
         else:
             wrapper_css = (
                 "{content}"
@@ -3429,6 +3733,8 @@ class PDFExportDialog(QDialog):
             raw = re.sub(r"<style[^>]*>.*?</style>", "", raw, flags=re.DOTALL | re.IGNORECASE)
             raw = re.sub(r"<script[^>]*>.*?</script>", "", raw, flags=re.DOTALL | re.IGNORECASE)
             raw = re.sub(r"<meta[^>]*>", "", raw, flags=re.IGNORECASE)
+            # collapsed <details> would hide their content on paper (Chromium honours "closed")
+            raw = re.sub(r"<details\b(?![^>]*\bopen\b)", "<details open", raw, flags=re.IGNORECASE)
             raw = re.sub(r"<title[^>]*>.*?</title>", "", raw, flags=re.DOTALL | re.IGNORECASE)
             raw = re.sub(r"<h1[^>]*>(.*?)</h1>", r"<p><strong>\1</strong></p>",
                          raw, flags=re.DOTALL | re.IGNORECASE)
@@ -3470,8 +3776,15 @@ class PDFExportDialog(QDialog):
                 return ""
             raw = sanitise_html(raw)
             if strip:
+                # drop formatting but keep the line structure (paragraphs, lists, line breaks)
+                raw = re.sub(r"(?i)<br\s*/?>|</(?:p|div|li|tr|h[1-6]|summary|details|ul|ol|table)>",
+                             "\n", raw)
+                raw = re.sub(r"(?i)<li\b[^>]*>", "\n\u2022 ", raw)
                 raw = re.sub(r"<(?!img\b|svg|/svg)[^>]+>", " ", raw)
-                raw = re.sub(r"\s+", " ", raw).strip()
+                raw = re.sub(r"[ \t\r\f\v]+", " ", raw)
+                raw = re.sub(r" ?\n ?", "\n", raw)
+                raw = re.sub(r"\n{3,}", "\n\n", raw).strip()
+                raw = raw.replace("\n", "<br>")
             return proc_media(raw)
 
         def fstyle(c):
@@ -3493,8 +3806,10 @@ class PDFExportDialog(QDialog):
             if not val:
                 return ""
             label = '<div class="fl">{}</div>'.format(html_module.escape(fname)) if conf["label"] else ""
-            return '<div class="fb" style="{}"><div class="fv">{}{}</div></div>'.format(
-                fstyle(conf), label, val)
+            chars, lines = _text_metrics(val)
+            long_field = chars > 900 or lines > 14 or val.count("<img") > 2
+            return '<div class="fb{}" style="{}"><div class="fv">{}{}</div></div>'.format(
+                " fb-long" if long_field else "", fstyle(conf), label, val)
 
         def clean_rendered(raw_html):
             raw_html, svgs = _protect_svg(raw_html)
@@ -3536,7 +3851,8 @@ class PDFExportDialog(QDialog):
         def build_tool_footer():
             footer_label = _t("pdf_footer_generated").format(
                 tool=TOOL_NAME,
-                version=_addon_version(),
+                version=_addon_version() + (
+                    " \u00b7 " + " \u00b7 ".join(generator.split(" \u00b7 ")[1:]) if mode != "pdf" else ""),
             )
             return (
                 '<footer class="export-footer">'
@@ -3572,9 +3888,13 @@ class PDFExportDialog(QDialog):
             return int(overhead + text_h + img_est + 4)
 
         def card_class(est):
-            if mode == "pdf" and est > break_h_px * 0.45:
+            # PDF: the WeasyPrint layout pass measures real gaps and decides which cards may
+            # continue on the next page; only cards certainly taller than a page start split.
+            if mode == "pdf" and est > break_h_px * 0.95:
                 return "card long-card"
             return "card"
+
+        unit_seq = [0]
 
         # ------------------------------------------------------------ entries
         qa_layout = self.qa_combo.currentIndex()
@@ -3771,7 +4091,8 @@ class PDFExportDialog(QDialog):
                 inner, est = ent["q"], ent["est_q"]
             else:
                 inner, est = ent["a"], ent["est_a"]
-            parts = ['<div class="{}"{}>'.format(card_class(est), ent["alt"])]
+            unit_seq[0] += 1
+            parts = ['<div class="{}"{} data-u="{}">'.format(card_class(est), ent["alt"], unit_seq[0])]
             if show_cnum:
                 label = "#{}".format(ent["num"])
                 if which == "a":
@@ -3825,9 +4146,19 @@ class PDFExportDialog(QDialog):
 
         if mode == "pdf":
             for n, u in enumerate(units):
+                parts = u["parts"]
                 if u["brk"] and n:
                     html.append('<div class="page-break"></div>')
-                html.extend(u["parts"])
+                    # a forced break is intended: the layout pass must not fill the gap before it
+                    parts = [p.replace(' data-u="', ' data-keep="1" data-u="', 1)
+                             if p.startswith('<div class="card') else p for p in parts]
+                html.extend(parts)
+            self._last_layout = {
+                # largest empty part of a page (fraction) tolerated to keep a card in one piece
+                "gap_ratio": 0 if qa_layout == 2 else (0.12 if compact else 0.33),
+                # ...but a card shorter than this (fraction of a page) always stays in one piece
+                "min_split": 0.25 if compact else 0.4,
+            }
         elif mode == "legacy":
             for u in units:
                 html.extend(u["parts"])
@@ -4012,12 +4343,207 @@ class PDFExportDialog(QDialog):
 
         html.append("</body></html>")
         result = "".join(html)
+        if "__PDFFER_GENERATOR__" in result:
+            # which note types ("card generators") produced the exported cards, most used first
+            used = {}
+            for ent in entries:
+                used[ent["nt"]] = used.get(ent["nt"], 0) + 1
+            kinds = [name for name, _ in sorted(used.items(), key=lambda kv: -kv[1])]
+            if len(kinds) > 2:
+                kinds = kinds[:2] + ["+{}".format(len(kinds) - 2)]
+            label = " \u00b7 ".join([generator] + [k if len(k) <= 60 else k[:59] + "\u2026" for k in kinds])
+            result = result.replace("__PDFFER_GENERATOR__",
+                                    label.replace("\\", "").replace('"', "'"), 1)
         logger.log("OK: {}, skip: {}".format(cards_ok, cards_skip))
         logger.log("Img OK: {}, fail: {}".format(img_ok[0], img_fail[0]))
         return result, card_ids
 
 
 _dlg = None
+
+
+
+class EngineSetupDialog(QDialog):
+    """Guided, one-click setup of what WeasyPrint needs on macOS (Homebrew: Python 3.14 + Pango).
+
+    With Homebrew present the install runs right here with live output. Without it, a Terminal
+    window opens with the official Homebrew installer followed by the two packages, because the
+    Homebrew installer needs the user's password and must run interactively.
+    """
+
+    PACKAGES = ["python@3.14", "pango"]
+    BREW_INSTALLER = "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh"
+
+    def __init__(self, owner):
+        super().__init__(owner)
+        self.owner = owner
+        self.setObjectName("PdfferWindow")  # same window background as the export window
+        self.setWindowTitle(_t("eng_title"))
+        self.setMinimumWidth(560)
+        self.proc = None
+        root = QVBoxLayout(self)
+        root.setContentsMargins(22, 20, 22, 18)
+        root.setSpacing(12)
+        title = QLabel(_t("eng_title"))
+        f = title.font()
+        f.setPointSize(f.pointSize() + 3)
+        f.setBold(True)
+        title.setFont(f)
+        root.addWidget(title)
+        intro = QLabel(_t("eng_intro"))
+        intro.setWordWrap(True)
+        intro.setObjectName("Secondary")
+        root.addWidget(intro)
+
+        self.rows = {}
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(8)
+        for i, (key, label) in enumerate((("brew", "Homebrew"), ("python", "Python 3.14"),
+                                          ("pango", "Pango"), ("engine", _t("eng_test")))):
+            mark = QLabel("\u2026")
+            mark.setFixedWidth(18)
+            name = QLabel(label)
+            detail = QLabel("")
+            detail.setObjectName("Secondary")
+            for col, w in enumerate((mark, name, detail)):
+                w.setMinimumHeight(22)
+                grid.addWidget(w, i, col)
+            self.rows[key] = (mark, detail)
+        grid.setColumnStretch(2, 1)
+        root.addLayout(grid)
+
+        self.note = QLabel("")
+        self.note.setWordWrap(True)
+        self.note.setVisible(False)
+        root.addWidget(self.note)
+        self.log = QPlainTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setVisible(False)
+        self.log.setMinimumHeight(160)
+        self.log.setStyleSheet("font-family: Menlo, monospace; font-size: 11px;")
+        root.addWidget(self.log)
+
+        buttons = QHBoxLayout()
+        self.copy_btn = QPushButton(_t("btn_eng_copy"))
+        self.copy_btn.clicked.connect(self._copy)
+        buttons.addWidget(self.copy_btn)
+        buttons.addStretch()
+        self.check_btn = QPushButton(_t("btn_engine_check"))
+        self.check_btn.clicked.connect(self._refresh)
+        buttons.addWidget(self.check_btn)
+        self.install_btn = QPushButton(_t("btn_eng_install"))
+        self.install_btn.setObjectName("Primary")
+        self.install_btn.clicked.connect(self._install)
+        for btn in (self.copy_btn, self.check_btn, self.install_btn):
+            btn.setMinimumWidth(btn.fontMetrics().horizontalAdvance(btn.text()) + 40)
+        buttons.addWidget(self.install_btn)
+        close = QPushButton(_t("btn_close"))
+        close.clicked.connect(self.accept)
+        buttons.addWidget(close)
+        root.addLayout(buttons)
+        self._refresh()
+
+    # ------------------------------------------------------------ status
+    def _refresh(self):
+        self.check_btn.setEnabled(False)
+        self.install_btn.setEnabled(False)
+        for mark, _ in self.rows.values():
+            mark.setText("\u2026")
+        self.owner._check_engine(force=True, then=self._show)
+
+    def _show(self, r):
+        self.report = r
+        ok = {"brew": bool(r.get("brew")), "python": bool(r.get("python")),
+              "pango": bool(r.get("pango")), "engine": bool(r.get("engine"))}
+        details = {"brew": r.get("brew") or "", "python": r.get("python") or "",
+                   "pango": "", "engine": r.get("engine") or ""}
+        for key, (mark, detail) in self.rows.items():
+            mark.setText("\u2713" if ok[key] else "\u2715")
+            mark.setStyleSheet("color: {}; font-weight: 700;".format("#28a745" if ok[key] else "#ff3b30"))
+            detail.setText(details[key])
+        self.check_btn.setEnabled(True)
+        if not r.get("macos", True):
+            self._say(_t("eng_unsupported"))
+            self.install_btn.setEnabled(False)
+        elif ok["engine"]:
+            self._say(_t("eng_done"))
+            self.install_btn.setEnabled(False)
+        else:
+            self.install_btn.setEnabled(self.proc is None)
+
+    def _say(self, text):
+        self.note.setText(text)
+        self.note.setVisible(bool(text))
+
+    def commands(self):
+        brew_line = '/bin/bash -c "$(curl -fsSL {})"'.format(self.BREW_INSTALLER)
+        return [brew_line, "brew install " + " ".join(self.PACKAGES)]
+
+    def _copy(self):
+        QApplication.clipboard().setText("\n".join(self.commands()))
+
+    # ------------------------------------------------------------ install
+    def _install(self):
+        brew = (getattr(self, "report", None) or {}).get("brew")
+        if brew:
+            self._install_with_brew(brew)
+        else:
+            self._install_in_terminal()
+
+    def _install_with_brew(self, brew):
+        self.install_btn.setEnabled(False)
+        self.log.clear()
+        self.log.setVisible(True)
+        self._say(_t("eng_running"))
+        self.proc = QProcess(self)
+        env = QProcessEnvironment.systemEnvironment()
+        env.insert("PATH", os.path.dirname(brew) + ":" + env.value("PATH", "/usr/bin:/bin"))
+        env.insert("HOMEBREW_NO_INSTALL_CLEANUP", "1")
+        self.proc.setProcessEnvironment(env)
+        self.proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        self.proc.readyReadStandardOutput.connect(self._pump)
+        self.proc.finished.connect(self._installed)
+        self.proc.start(brew, ["install"] + self.PACKAGES)
+
+    def _pump(self):
+        text = bytes(self.proc.readAllStandardOutput()).decode("utf-8", "replace")
+        self.log.appendPlainText(text.rstrip())
+        self.log.verticalScrollBar().setValue(self.log.verticalScrollBar().maximum())
+
+    def _installed(self, code, _status):
+        self.proc = None
+        if code != 0:
+            self._say(_t("eng_failed"))
+        self._refresh()
+
+    def _install_in_terminal(self):
+        script = "\n".join([
+            "#!/bin/bash",
+            "echo 'AnkiPdffer: installing the PDF engine (Homebrew, Python 3.14, Pango)'",
+            "if ! command -v brew >/dev/null 2>&1; then",
+            "  " + self.commands()[0],
+            "  eval \"$(/opt/homebrew/bin/brew shellenv 2>/dev/null || /usr/local/bin/brew shellenv)\"",
+            "fi",
+            self.commands()[1] + " && echo && echo 'Done - return to Anki and click Check again.'",
+            "",
+        ])
+        path = os.path.join(tempfile.gettempdir(), "AnkiPdffer-install-pdf-engine.command")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(script)
+        os.chmod(path, 0o755)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        self._say(_t("eng_terminal"))
+
+    def reject(self):
+        if self.proc is not None:  # keep the install running only while the guide is open
+            self.proc.kill()
+        super().reject()
+
+    def accept(self):
+        if self.proc is not None:
+            self.proc.kill()
+        super().accept()
 
 
 def _dialog_alive(dlg):

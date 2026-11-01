@@ -11,6 +11,13 @@ AnkiPdffer turns flashcards into clean, readable documents for printing, offline
 
 ---
 
+## What's new in 1.4.1
+
+- **Preview = the real PDF**, rendered exactly like the export.
+- **Smarter pagination**: cards continue on the next page only where it clearly saves space, never inside a field — compact exports have far less empty space.
+- **Clean links, uncropped images**, line breaks kept when stripping formatting.
+- **PDF engine setup** in Settings with one-click install, and a loader that stays in front.
+
 ## What's new in 1.4.0
 
 - **Worksheets**: questions with an answer key, or a question page followed by its answer page.
@@ -47,7 +54,7 @@ Pick the deck, subdeck and an optional filter at the top; the footer shows how m
 | **Appearance** | Theme, font and size, card width, layout density, card style, zebra / high-contrast / grid options |
 | **Page** | Paper size, margins, padding, spacing, line height, image height, page numbers |
 | **Fields** | Which field goes where and how it looks, per note type (Fields source only) |
-| **Settings** | Option presets, language, debug log, reset |
+| **Settings** | Option presets, language, PDF engine setup, debug log, reset |
 
 Everything is saved as you go — there is no *Save* button.
 
@@ -216,7 +223,7 @@ Click any image in the exported HTML to open it fullscreen.
 ## Requirements
 
 * Anki 23.11+
-* PDF export uses the bundled WeasyPrint in an isolated Python process. On macOS this needs **Python 3.14** and **Pango** (`brew install python@3.14 pango`). If they are not found, AnkiPdffer falls back to Qt WebEngine's PDF renderer (works everywhere, with simpler pagination). HTML export has no extra requirements.
+* PDF export uses the bundled WeasyPrint in an isolated Python process. On macOS this needs **Python 3.14** and **Pango** — **Settings → PDF engine → Set up…** checks them and installs what is missing with one click (or run `brew install python@3.14 pango`). If they are not found, AnkiPdffer falls back to Qt WebEngine's PDF renderer (works everywhere, with simpler pagination). HTML export has no extra requirements.
 
 ---
 

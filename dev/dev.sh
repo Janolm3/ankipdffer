@@ -94,6 +94,10 @@ case "${1:-status}" in
     if [ -n "$(sandbox_pids)" ]; then
       echo "sandbox Anki is already running (dev/dev.sh sandbox-stop first)"; exit 1
     fi
+    if pgrep -x Anki >/dev/null 2>&1; then
+      # Anki allows one running copy: a second launch only re-activates the open one
+      echo "your regular Anki is running - quit it first (Anki allows only one running copy)"; exit 1
+    fi
     [ "${1}" = "sandbox-reset" ] && rm -rf "$SANDBOX"
     [ -x "$ANKI_APP" ] || { echo "Anki not found at $ANKI_APP (set ANKI_APP)"; exit 1; }
     if [ ! -f "$SANDBOX/prefs21.db" ] || [ ! -f "$SANDBOX/User 1/collection.anki2" ]; then

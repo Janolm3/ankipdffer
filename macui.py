@@ -140,14 +140,13 @@ def glyph_path(name, pal):
 
 
 def glyph_icon(name, pal, size=14):
-    pix = QPixmap(size * 2, size * 2)
-    pix.fill(Qt.GlobalColor.transparent)
-    loaded = QPixmap()
-    if loaded.load(glyph_path(name, pal)):
-        pix = loaded.scaled(size * 2, size * 2, Qt.AspectRatioMode.KeepAspectRatio,
-                            Qt.TransformationMode.SmoothTransformation)
-        pix.setDevicePixelRatio(2.0)
-    return QIcon(pix)
+    """Vector icon: Qt's SVG icon engine renders it sharp at any size and pixel ratio."""
+    icon = QIcon(glyph_path(name, pal))
+    if icon.isNull():
+        pix = QPixmap(size, size)
+        pix.fill(Qt.GlobalColor.transparent)
+        icon = QIcon(pix)
+    return icon
 
 
 _EMOJI_RE = re.compile("[\U0001F000-\U0001FAFF☀-➿️‍]+\\s*")

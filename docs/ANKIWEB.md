@@ -8,6 +8,14 @@ Open source on GitHub (screenshots, full documentation, changelog):
 
 [Buy Me a Coffee](https://buymeacoffee.com/janolm)
 
+## New in 1.4.1
+
+- **Preview PDF is the real PDF** — exactly what Export produces.
+- **Smarter pagination** — cards continue on the next page only where it clearly saves space, never in the middle of a field. Compact exports have far less empty space.
+- **Clean links and uncropped images**; *Strip Anki formatting* keeps line breaks.
+- **PDF engine setup** in Settings — checks and installs what WeasyPrint needs with one click.
+- The progress panel stays in front until the export is done.
+
 ## New in 1.4.0
 
 - **Worksheets** — print all questions followed by an answer key, or each question on one page and its answer on the next.
@@ -78,4 +86,4 @@ Click any image in the exported HTML to open it fullscreen.
 ## Requirements
 
 - Anki 23.11+
-- PDF export uses the bundled WeasyPrint. On macOS it needs Python 3.14 and Pango (`brew install python@3.14 pango`); without them AnkiPdffer falls back to Anki's built-in PDF renderer. HTML export has no extra requirements.
+- PDF export uses the bundled WeasyPrint. On macOS it needs Python 3.14 and Pango — Settings → PDF engine → Set up… installs them with one click. Without them AnkiPdffer falls back to Anki's built-in PDF renderer. HTML export has no extra requirements.
