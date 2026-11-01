@@ -4,8 +4,6 @@ Export Anki decks to polished PDFs or standalone interactive HTML files.
 
 AnkiPdffer turns flashcards into clean, readable documents for printing, offline study, sharing, and archiving.
 
-[GitHub](https://github.com/Janolm3/ankipdffer)
-
 ---
 
 ## Highlights
