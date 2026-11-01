@@ -12,6 +12,8 @@ All notable changes to the **AnkiPdffer Dev** add-on will be documented in this 
 - The export window opens faster: the field table is built once instead of once per deck-picker change (reopening went from ~0.7 s to ~0.1 s on a 17,000-card collection).
 - Settings → PDF engine is quieter: grey text with a coloured dot, the last result shows at once and is re-checked silently in the background ("Checking…" only appears after *Check again*).
 - *Reset everything to defaults* looks like a normal button and turns muted red only on hover.
+- The page footer of a PDF names the engine right after the version (*AnkiPdffer 1.4.2 · WeasyPrint · Fields · Compact · …*; *Qt WebEngine* for the built-in renderer).
+- Option tabs: the right edges of the controls line up and the form's visual weight sits on the window's centre line instead of leaning right.
 
 ### Fixed
 - The macOS-only bundled packages are no longer put in front of other Pythons, so a WeasyPrint installed for the system Python (Linux) or the private environment (Windows) can load. If another WeasyPrint version cannot run the layout pass, the PDF is rendered without it instead of falling back to the built-in renderer.

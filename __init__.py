@@ -1236,7 +1236,55 @@ class PDFExportDialog(QDialog):
         form.setVerticalSpacing(10)
         outer.addLayout(form)
         outer.addStretch(1)
+        page._outer, page._form = outer, form
+        # sizes are only reliable once the stylesheet has been applied
+        QTimer.singleShot(0, lambda: PDFExportDialog._balance_form(page))
         return page, form
+
+    @staticmethod
+    def _balance_form(page):
+        """Even out the visual weight of a form page.
+
+        Labels are short, light text and controls wide, heavy boxes, so a form centred by its
+        outline looks pulled to the right. The block is moved left until the weighted centre
+        (controls count four times a label) sits on the page's centre line; segmented controls
+        that fall a few points short of the other controls are stretched so the right edges align.
+        """
+        try:
+            form, outer = page._form, page._outer
+            label_w = field_w = 0
+            fields = []
+            for row in range(form.rowCount()):
+                label = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
+                field = form.itemAt(row, QFormLayout.ItemRole.FieldRole)
+                if label is None or field is None:
+                    continue  # spanning rows (separators, notes) take no part
+                for item in (label, field):
+                    if item.widget() is not None:
+                        item.widget().ensurePolished()
+                label_w = max(label_w, label.sizeHint().width())
+                field_w = max(field_w, field.sizeHint().width())
+                fields.append(field.widget())
+            for w in fields:
+                if (isinstance(w, macui.SegmentedControl) and w.property("role") != "tabs"
+                        and 0 < field_w - w.sizeHint().width() <= 40):
+                    w.setFixedWidth(field_w)
+            spacing = form.horizontalSpacing()
+            block = label_w + spacing + field_w
+            label_centre = label_w / 2 - block / 2
+            field_centre = block / 2 - field_w / 2
+            shift = (label_centre + 4 * field_centre) / 5  # > 0: the weight sits right of centre
+            if getattr(page, "_balance_spacer", None) is None:
+                # Preferred: it gives way (down to 0) when the window is narrow
+                page._balance_spacer = QSpacerItem(
+                    0, 0, QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+                outer.insertItem(outer.count() - 1, page._balance_spacer)
+            page._balance_spacer.changeSize(
+                int(max(0, min(2 * shift, 80))), 0,
+                QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+            outer.invalidate()
+        except RuntimeError:
+            pass  # the page was deleted before the timer fired
 
     @staticmethod
     def _scroll_page(widget):
@@ -3473,11 +3521,13 @@ class PDFExportDialog(QDialog):
         )
         page_numbers = self.page_numbers_cb.isChecked() and mode == "pdf"
         bottom_mm = max(top_mg, 12) if page_numbers else max(top_mg, 9)
-        generator = " \u00b7 ".join([
+        engine_name = {"pdf": "WeasyPrint", "pdf_fallback": "Qt WebEngine"}.get(mode)
+        generator = " \u00b7 ".join(filter(None, [
             "{} {}".format(TOOL_NAME, _addon_version()),
+            engine_name,
             re.sub(r"\s*\(.*\)", "", _t("source_cards" if render_mode == 1 else "source_fields")),
             _t("layout_compact" if compact else "layout_standard"),
-        ])
+        ]))
         generator_css = (
             "@bottom-right{{content:\"__PDFFER_GENERATOR__\";font-family:{f};font-size:7px;color:{c};"
             "opacity:.75}}".format(f=font, c=t["mut"])

@@ -381,6 +381,10 @@ def check_141(col, load_addon, pick):
     footer = html.split("@bottom-right{content:\"", 1)[1].split('"', 1)[0]
     ok(footer.startswith("AnkiPdffer") and "Compact" in footer and "MCQ" in footer,
        "running footer names the generator and the note type ({})".format(footer))
+    ok(footer.startswith("AnkiPdffer 1.4.") and footer.split(" \u00b7 ")[1] == "WeasyPrint"
+       and footer.split(" \u00b7 ")[2] == "Fields", "footer: version, engine, then render mode ({})".format(footer))
+    fb_html = dlg._build_html(mode="pdf_fallback")[0]
+    ok("1.4.2 \u00b7 Qt WebEngine \u00b7 Fields" in fb_html, "Qt fallback footer names its engine")
     ok(".fv{font-size:inherit;orphans" in html and "overflow:hidden}" not in html.split(".fv{", 1)[1][:80],
        "fields no longer clip overflowing content")
 
