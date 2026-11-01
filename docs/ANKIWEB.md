@@ -8,6 +8,12 @@ Open source on GitHub (screenshots, full documentation, changelog):
 
 [Buy Me a Coffee](https://buymeacoffee.com/janolm)
 
+## New in 1.4.2
+
+- **Export to PDF button on the deck screen** — right below *Study Now*, opens AnkiPdffer on that deck (can be hidden in Settings).
+- **PDF engine setup on Windows** — Settings → PDF engine → Set up… installs Python, Pango and WeasyPrint.
+- The export window opens faster and the Settings tab is quieter.
+
 ## New in 1.4.1
 
 - **Preview PDF is the real PDF** — exactly what Export produces.

@@ -21,7 +21,7 @@ SANDBOX="${SANDBOX:-$REPO/dev/.sandbox}"
 ANKI_APP="${ANKI_APP:-/Applications/Anki.app/Contents/MacOS/Anki}"
 
 EXCLUDES=(
-  --exclude ".git" --exclude ".gitignore" --exclude "dev/" --exclude "dist/" --exclude "docs/"
+  --exclude ".git" --exclude ".claude/" --exclude ".gitignore" --exclude "dev/" --exclude "dist/" --exclude "docs/"
   --exclude "__pycache__/" --exclude "*.pyc" --exclude ".DS_Store"
   --exclude "settings.json" --exclude "meta.json" --exclude "last_export_log.txt" --exclude "user_files/"
 )

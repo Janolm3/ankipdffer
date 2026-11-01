@@ -2,7 +2,7 @@
 
 All notable changes to the **AnkiPdffer Dev** add-on will be documented in this file.
 
-## [Unreleased]
+## [1.4.2] - 2026-11-01
 
 ### Added
 - **Export to PDF button on the deck screen**: a native OS X–style button right below Anki's counts and *Study Now* (also on the "Congratulations" screen) opens AnkiPdffer on that deck. It can be hidden in Settings → *Deck screen*.
