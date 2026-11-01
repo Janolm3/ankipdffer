@@ -377,8 +377,9 @@ def check_141(col, load_addon, pick):
     ok("box-decoration-break:clone" in html, "split cards keep their frame on both pages")
     ok(".fv a,.rs a{color:" in html and "text-decoration:none" in html, "links styled (no default blue underline)")
     ok("<details open" in html and "summary" in html, "<details> exported open, summary styled")
-    ok("@bottom-right{content:\"AnkiPdffer" in html and "Compact" in html.split("@bottom-right", 1)[1][:160],
-       "running footer names the generator")
+    footer = html.split("@bottom-right{content:\"", 1)[1].split('"', 1)[0]
+    ok(footer.startswith("AnkiPdffer") and "Compact" in footer and "MCQ" in footer,
+       "running footer names the generator and the note type ({})".format(footer))
     ok(".fv{font-size:inherit;orphans" in html and "overflow:hidden}" not in html.split(".fv{", 1)[1][:80],
        "fields no longer clip overflowing content")
 

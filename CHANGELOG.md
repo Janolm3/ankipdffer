@@ -12,7 +12,7 @@ All notable changes to the **AnkiPdffer Dev** add-on will be documented in this 
 
 ### Added
 - **PDF engine setup** in Settings: shows whether WeasyPrint is ready and opens a guide that checks Homebrew, Python 3.14 and Pango and installs what is missing with one click (or opens Terminal with the official Homebrew installer when Homebrew itself is missing).
-- A subtle line in the page margin names what made the PDF, e.g. *AnkiPdffer 1.4.1 · Fields · Compact*.
+- A subtle line in the page margin names what made the PDF: AnkiPdffer version, mode, layout and the note type(s) the cards come from, e.g. *AnkiPdffer 1.4.1 · Fields · Compact · Basic*.
 
 ### Fixed
 - Links used the browser's default blue underline; they now match the theme.

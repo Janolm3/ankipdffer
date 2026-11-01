@@ -1383,8 +1383,9 @@ class PDFExportDialog(QDialog):
         ly.addWidget(lbl)
         self.nt_combo = NoScrollComboBox()
         self.nt_combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.nt_combo.setMinimumWidth(180)
-        self.nt_combo.setMaximumWidth(320)
+        self.nt_combo.setMinimumWidth(200)
+        self.nt_combo.setMaximumWidth(460)
+        self.nt_combo.setMaxVisibleItems(24)
         self.nt_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.nt_combo.activated.connect(self._on_notetype_picked)
         ly.addWidget(self.nt_combo, 2)
@@ -1916,6 +1917,7 @@ class PDFExportDialog(QDialog):
             self.nt_combo.insertSeparator(self.nt_combo.count())
         for x in others:
             self.nt_combo.addItem(x.name, x.id)
+        self._fit_popup_width(self.nt_combo)
         target, source = self._choose_notetype(deck_ids, [x.id for x in others])
         idx = self.nt_combo.findData(target) if target is not None else -1
         self.nt_combo.setCurrentIndex(idx)
@@ -3293,8 +3295,8 @@ class PDFExportDialog(QDialog):
             _t("layout_compact" if compact else "layout_standard"),
         ])
         generator_css = (
-            "@bottom-right{{content:\"{g}\";font-family:{f};font-size:7px;color:{c};"
-            "opacity:.75}}".format(g=generator.replace("\\", "").replace('"', "'"), f=font, c=t["mut"])
+            "@bottom-right{{content:\"__PDFFER_GENERATOR__\";font-family:{f};font-size:7px;color:{c};"
+            "opacity:.75}}".format(f=font, c=t["mut"])
         )
         page_num_css = (
             "@bottom-center{{content:counter(page) ' / ' counter(pages);"
@@ -4341,6 +4343,17 @@ class PDFExportDialog(QDialog):
 
         html.append("</body></html>")
         result = "".join(html)
+        if "__PDFFER_GENERATOR__" in result:
+            # which note types ("card generators") produced the exported cards, most used first
+            used = {}
+            for ent in entries:
+                used[ent["nt"]] = used.get(ent["nt"], 0) + 1
+            kinds = [name for name, _ in sorted(used.items(), key=lambda kv: -kv[1])]
+            if len(kinds) > 2:
+                kinds = kinds[:2] + ["+{}".format(len(kinds) - 2)]
+            label = " \u00b7 ".join([generator] + [k if len(k) <= 60 else k[:59] + "\u2026" for k in kinds])
+            result = result.replace("__PDFFER_GENERATOR__",
+                                    label.replace("\\", "").replace('"', "'"), 1)
         logger.log("OK: {}, skip: {}".format(cards_ok, cards_skip))
         logger.log("Img OK: {}, fail: {}".format(img_ok[0], img_fail[0]))
         return result, card_ids
