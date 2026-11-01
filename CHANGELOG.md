@@ -22,6 +22,7 @@ All notable changes to the **AnkiPdffer Dev** add-on will be documented in this 
 - Collapsed `<details>` blocks (e.g. source notes) were hidden in the fallback renderer; they are exported open with a small caption.
 - The System font fetched Google Fonts on every export; only the Inter font does now, so exports work offline.
 - The search field's magnifier was blurry on Retina displays.
+- The save dialog opened at the disk root (not writable); it now starts in the last export folder, or the Desktop.
 
 ## [1.4.0] - 2026-11-01
 

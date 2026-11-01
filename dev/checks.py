@@ -404,6 +404,14 @@ def check_141(col, load_addon, pick):
     ok(dlg._preview_pending, "Preview opens without the 'saved' dialog")
     dlg._reset()
 
+    # save dialog starts in a writable folder (last export folder, else Desktop)
+    folder = dlg._export_dir()
+    ok(os.path.isdir(folder) and os.access(folder, os.W_OK) and folder != "/",
+       "save dialog starts in a writable folder ({})".format(folder))
+    mod._store.update_settings({"export_dir": "/nonexistent/x"})
+    ok(dlg._export_dir() != "/nonexistent/x", "a vanished export folder falls back to Desktop")
+    mod._store.update_settings({"export_dir": ""})
+
     # loader: a floating HUD that stays in front while busy
     dlg.show()
     dlg._begin_busy("x")

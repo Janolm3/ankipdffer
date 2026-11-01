@@ -2588,6 +2588,17 @@ class PDFExportDialog(QDialog):
             showWarning(str(e))
             self._reset()
 
+    @staticmethod
+    def _export_dir():
+        """Where the save dialog starts: the last export folder, else Desktop (Anki's own working
+        directory is the disk root, which a regular user cannot write to)."""
+        home = os.path.expanduser("~")
+        for folder in (_store.settings.get("export_dir"), os.path.join(home, "Desktop"),
+                       os.path.join(home, "Documents"), home):
+            if folder and os.path.isdir(folder) and os.access(folder, os.W_OK):
+                return folder
+        return home
+
     def _on_export(self):
         if not self._precheck():
             return
@@ -2595,9 +2606,14 @@ class PDFExportDialog(QDialog):
         short = self._safe_filename(dn.split("::")[-1] if "::" in dn else dn)
         uid = str(uuid.uuid4()).split('-')[0][:6]
         sp, _ = QFileDialog.getSaveFileName(
-            self, _t("dlg_save_pdf"), "{}_{}.pdf".format(short, uid), _t("pdf_filter"))
+            self, _t("dlg_save_pdf"), os.path.join(self._export_dir(), "{}_{}.pdf".format(short, uid)),
+            _t("pdf_filter"))
         if not sp:
             return
+        if not sp.lower().endswith(".pdf"):
+            sp += ".pdf"
+        _store.update_settings({"export_dir": os.path.dirname(sp)})
+        _store.save()
         logger.start("Export")
         self._font_debug_logged_modes = set()
         self._preview_pending = False
