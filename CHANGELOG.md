@@ -2,7 +2,7 @@
 
 All notable changes to the **AnkiPdffer Dev** add-on will be documented in this file.
 
-## [Unreleased]
+## [1.4.4] - 2026-11-01
 
 ### Changed
 - Option tabs are centred with equal margins on both sides (and vertically). On the *Content* tab the line through the middle of the *Content* tab button is the left edge of the *Fields* box: the control column is sized for that, independently of the window size.

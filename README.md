@@ -11,6 +11,11 @@ AnkiPdffer turns flashcards into clean, readable documents for printing, offline
 
 ---
 
+## What's new in 1.4.4
+
+- **Balanced option tabs**: every form is centred with equal margins, and on *Content* the controls start on the *Content* tab's centre line.
+- **Filter builder fix**: pop-up lists no longer hide entries on macOS.
+
 ## What's new in 1.4.3
 
 - **Filter builder**: quick filters in the search field and a rule editor (⌘⇧F) with a live card count — no Anki search syntax needed.
@@ -256,7 +261,7 @@ dev/dev.sh preview       # dialog screenshots + sample PDFs -> dev/out/index.htm
 dev/dev.sh sandbox       # throw-away Anki profile with a sample deck and this add-on
 dev/dev.sh sandbox-stop  # quit only the sandbox Anki
 dev/dev.sh sync          # copy the working tree into your Anki add-ons folder
-./release.sh 1.4.2 --build-only   # dist/AnkiPdffer-1.4.2.ankiaddon (+ .zip), nothing published
+./release.sh 1.4.4 --build-only   # dist/AnkiPdffer-1.4.4.ankiaddon (+ .zip), nothing published
 ```
 
 New interface languages go into `translations.py`; missing strings fall back to English. The AnkiWeb description lives in [`docs/ANKIWEB.md`](docs/ANKIWEB.md).
