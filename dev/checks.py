@@ -821,8 +821,40 @@ def check_143(col, load_addon, pick):
     builder.remove_row(builder.rows[1])
     ok(len(builder.rows) == 2, "− removes it")
     builder.rows[1].value.setCurrentIndex(0) if hasattr(builder.rows[1].value, "setCurrentIndex") else None
+    builder.match.setCurrentIndex(1)
+    builder.match.showPopup()
+    app.processEvents()
+    ok(builder.match.view().minimumWidth() >= builder.match.width(),
+       "builder pop-up lists are at least as wide as their button (entries were elided on macOS)")
+    builder.match.hidePopup()
     builder.reject()
     dlg.close()
+
+    # one vertical axis: middle of the Content tab = middle of the "Fields" segment, every form
+    # tab hangs its controls from the same column, at any reasonable window width
+    from PyQt6.QtCore import QPoint
+    for size in ((820, 560), (1300, 760)):
+        win = mod.PDFExportDialog(mw)
+        win.resize(*size)
+        win.show()
+        for _ in range(4):
+            app.processEvents()
+        win.tabs.setCurrentIndex(0)
+        for _ in range(4):
+            app.processEvents()
+        tab, seg = win.tabs.buttons[0], win.render_radio.buttons[0]
+        diff = (seg.mapToGlobal(QPoint(seg.width() // 2, 0)).x()
+                - tab.mapToGlobal(QPoint(tab.width() // 2, 0)).x())
+        lefts = set()
+        for i, w in ((0, win.qa_combo), (1, win.font_combo), (2, win.page_combo), (4, win.lang_combo)):
+            win.tabs.setCurrentIndex(i)
+            for _ in range(4):
+                app.processEvents()
+            lefts.add(w.mapToGlobal(QPoint(0, 0)).x())
+        ok(abs(diff) <= 1 and len(lefts) == 1,
+           "{}x{}: Content tab and Fields segment share one axis ({:+d}), one control column {}".format(
+               size[0], size[1], diff, sorted(lefts)))
+        win.close()
     shutil.rmtree(stage, ignore_errors=True)
 
 

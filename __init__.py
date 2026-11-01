@@ -1254,6 +1254,7 @@ class PDFExportDialog(QDialog):
         self.stack = self.tab_box.stack
         self.stack.currentChanged.connect(
             lambda i: i == self.stack.count() - 1 and self._engine_report is None and self._check_engine())
+        self.stack.currentChanged.connect(lambda *_: self._queue_align())
         body = QVBoxLayout()
         body.setContentsMargins(20, 14, 20, 18)
         self.tab_box.setMinimumHeight(300)
@@ -1288,11 +1289,14 @@ class PDFExportDialog(QDialog):
         page.setObjectName("Page")
         outer = QHBoxLayout(page)
         outer.setContentsMargins(20, 8, 20, 16)
-        outer.addStretch(1)
+        # set by _align_forms so the control column hangs from the Content tab's axis;
+        # Preferred: it gives way when the window is too narrow
+        page._lead = QSpacerItem(0, 0, QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+        outer.addItem(page._lead)
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        # centred both ways: the form sits in the middle of the tab at any window size
-        form.setFormAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
+        # vertically centred; horizontally placed on the tab bar's axis by _align_forms
+        form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
         form.setHorizontalSpacing(10)
@@ -1310,7 +1314,7 @@ class PDFExportDialog(QDialog):
 
         Segmented controls and pop-up menus that fall a few points short of the widest control
         get its width (measured once the stylesheet applies), so the column has one right edge.
-        The form itself is centred both ways in the tab (see _form_page).
+        The form is centred vertically and hung from the tab bar's axis (see _align_forms).
         """
         try:
             form = page._form
@@ -2061,6 +2065,75 @@ class PDFExportDialog(QDialog):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._position_busy_overlay()
+        self._queue_align()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._queue_align()
+
+    # ------------------------------------------------------------- form axis
+    def _queue_align(self):
+        if not getattr(self, "_align_queued", False):
+            self._align_queued = True
+            QTimer.singleShot(0, self._align_forms)
+
+    def _form_pages(self):
+        pages = []
+        for i in range(self.stack.count()):
+            w = self.stack.widget(i)
+            page = w.widget() if isinstance(w, QScrollArea) else w
+            if page is not None and hasattr(page, "_form"):
+                pages.append(page)
+        return pages
+
+    def _align_forms(self):
+        """One vertical axis ties the tab bar to the forms: the middle of the "Content" tab runs
+        through the middle of the Source control's first segment ("Fields"). Every form tab
+        hangs its control column from the same line, so nothing jumps when switching tabs; when
+        a page is too narrow the form moves left only as far as it must."""
+        self._align_queued = False
+        try:
+            tab = self.tabs.buttons[0]
+            axis = tab.mapTo(self.tab_box, QPoint(tab.width() // 2, 0)).x()
+            seg = self.render_radio.buttons[0]
+            if seg.width() > 0:  # measured once the Content page has been laid out
+                self._seg_offset = seg.mapTo(self.render_radio, QPoint(seg.width() // 2, 0)).x()
+            offset = getattr(self, "_seg_offset", None)
+            if offset is None:
+                offset = self.render_radio.sizeHint().width() // 4
+            column = axis - offset  # left edge of every control column, in tab box coordinates
+            stack_x = self.stack.mapTo(self.tab_box, QPoint(0, 0)).x()
+            scroll = self.stack.currentWidget()
+            stack_w = scroll.viewport().width() if isinstance(scroll, QScrollArea) else self.stack.width()
+            pages = []
+            for page in self._form_pages():
+                form = page._form
+                label_w = field_w = 0
+                for row in range(form.rowCount()):
+                    label = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
+                    field = form.itemAt(row, QFormLayout.ItemRole.FieldRole)
+                    if label is None or field is None:
+                        continue
+                    label_w = max(label_w, label.sizeHint().width())
+                    field_w = max(field_w, field.sizeHint().width())
+                # hidden tabs keep a stale geometry: measure every page by the shared stack
+                left, _, right, _ = page.layout().getContentsMargins()
+                origin = stack_x + left
+                labels_end = origin + label_w + form.horizontalSpacing()  # column can't start sooner
+                fits_until = origin + stack_w - left - right - field_w  # nor later than this
+                pages.append((page, labels_end, fits_until))
+            if not pages:
+                return
+            # narrow window: every tab moves back to the same column, so nothing jumps
+            column = min([column] + [fits for _, _, fits in pages])
+            for page, labels_end, fits_until in pages:
+                col = max(labels_end, min(column, fits_until))
+                lead = int(max(0, col - labels_end))
+                if page._lead.sizeHint().width() != lead:
+                    page._lead.changeSize(lead, 0, QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+                    page.layout().invalidate()
+        except (AttributeError, IndexError, RuntimeError):
+            pass
 
     def moveEvent(self, event):
         super().moveEvent(event)
