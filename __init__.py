@@ -2,6 +2,7 @@ import os
 import re
 import urllib.parse
 import base64
+import glob
 import mimetypes
 import tempfile
 import traceback
@@ -346,6 +347,122 @@ def _addon_version(default="1.4.1"):
         return manifest.get("human_version", default)
     except Exception:
         return default
+
+
+# ------------------------------------------------------------------ PDF engine per platform
+# macOS: the bundled .vendor (arm64, CPython 3.14 builds) runs in Homebrew's Python 3.14 and uses
+# Homebrew's Pango. Its compiled modules cannot load anywhere else, so on Windows the same
+# WeasyPrint version lives in a private virtual environment in user_files/ (kept across add-on
+# updates) and uses Pango from MSYS2, as WeasyPrint's own Windows guide describes. Elsewhere
+# (Linux), a WeasyPrint installed for the system Python is used when present.
+WEASYPRINT_VERSION = "68.1"  # the layout pass reads WeasyPrint internals: keep it pinned
+WIN_PYTHON_WINGET_ID = "Python.Python.3.13"
+WIN_MSYS2_WINGET_ID = "MSYS2.MSYS2"
+WIN_PANGO_PACKAGE = "mingw-w64-ucrt-x86_64-pango"
+WIN_PANGO_DLL = "libpango-1.0-0.dll"
+WINGET_FLAGS = ["--accept-source-agreements", "--accept-package-agreements",
+                "--disable-interactivity", "--silent"]
+
+
+def _engine_platform():
+    if sys.platform == "darwin":
+        return "mac"
+    if sys.platform == "win32":
+        return "windows"
+    return "other"
+
+
+def _no_console():
+    """subprocess keyword arguments that keep a console window from flashing up on Windows."""
+    flag = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return {"creationflags": flag} if flag and _engine_platform() == "windows" else {}
+
+
+def _win_engine_dir():
+    return os.path.join(os.path.dirname(__file__), "user_files", "pdf-engine")
+
+
+def _win_engine_python():
+    return os.path.join(_win_engine_dir(), "Scripts", "python.exe")
+
+
+def _win_engine_installed():
+    """The private environment exists and holds the pinned WeasyPrint."""
+    site = os.path.join(_win_engine_dir(), "Lib", "site-packages")
+    return os.path.isfile(_win_engine_python()) and os.path.isdir(
+        os.path.join(site, "weasyprint-{}.dist-info".format(WEASYPRINT_VERSION)))
+
+
+def _msys2_roots():
+    drive = os.environ.get("SystemDrive") or "C:"
+    roots = [os.environ.get("ANKI_PDFFER_MSYS2"), drive + "\\msys64", "C:\\msys64"]
+    return [r for n, r in enumerate(roots) if r and r not in roots[:n]]
+
+
+def _msys2_bash():
+    return next((p for p in (os.path.join(r, "usr", "bin", "bash.exe") for r in _msys2_roots())
+                 if os.path.isfile(p)), None)
+
+
+def _win_dll_dirs():
+    """Folders that hold Pango's DLLs: the user's own WEASYPRINT_DLL_DIRECTORIES first, then MSYS2."""
+    dirs = [d for d in (os.environ.get("WEASYPRINT_DLL_DIRECTORIES") or "").split(";") if d]
+    for root in _msys2_roots():
+        dirs += [os.path.join(root, "ucrt64", "bin"), os.path.join(root, "mingw64", "bin")]
+    dirs.append(os.path.join(os.environ.get("ProgramFiles") or "C:\\Program Files", "GTK3-Runtime Win64", "bin"))
+    seen = []
+    for d in dirs:
+        if d not in seen and os.path.isfile(os.path.join(d, WIN_PANGO_DLL)):
+            seen.append(d)
+    return seen
+
+
+def _win_python_candidates():
+    """Commands that may start a Python on Windows, newest installs first."""
+    local = os.environ.get("LOCALAPPDATA") or ""
+    program_files = os.environ.get("ProgramFiles") or "C:\\Program Files"
+
+    def newest_first(pattern):
+        found = glob.glob(pattern)
+        return sorted(found, key=lambda p: [int(n) for n in re.findall(r"\d+", os.path.basename(
+            os.path.dirname(p)))], reverse=True)
+
+    commands = []
+    if shutil.which("py"):
+        commands.append([shutil.which("py"), "-3"])
+    for pattern in (os.path.join(local, "Python", "pythoncore-3*-64", "python.exe"),  # install manager
+                    os.path.join(local, "Programs", "Python", "Python3*", "python.exe"),
+                    os.path.join(program_files, "Python3*", "python.exe")):
+        commands += [[p] for p in newest_first(pattern)]
+    if shutil.which("python"):
+        commands.append([shutil.which("python")])  # may be the Store stub: the probe rejects it
+    return commands
+
+
+def _win_base_python(logs=None):
+    """A 64-bit Python 3.10+ to create the engine's environment from (3.10-3.14 preferred:
+    every package WeasyPrint needs ships ready-made Windows wheels for them)."""
+    probe = ("import struct, sys\n"
+             "if sys.version_info >= (3, 10) and struct.calcsize('P') == 8:\n"
+             "    print('%d.%d %s' % (sys.version_info[0], sys.version_info[1], sys.executable))\n")
+    found = []
+    for command in _win_python_candidates():
+        try:
+            result = subprocess.run(command + ["-I", "-c", probe], capture_output=True, text=True,
+                                    timeout=20, **_no_console())
+        except Exception as e:
+            if logs is not None:
+                logs.append("Python probe error [{}]: {}".format(" ".join(command), e))
+            continue
+        line = (result.stdout or "").strip().splitlines()[-1:] if result.returncode == 0 else []
+        if line and " " in line[0]:
+            version, exe = line[0].split(" ", 1)
+            if os.path.isfile(exe):
+                found.append((tuple(int(n) for n in version.split(".")), exe))
+    if not found:
+        return None
+    supported = [f for f in found if f[0] <= (3, 14)]
+    return max(supported or found)[1]
 
 
 # Runs inside the isolated WeasyPrint process (see _export_pdf_via_weasyprint). Cards start as
@@ -1073,7 +1190,6 @@ class PDFExportDialog(QDialog):
         self.tab_box.finish()
         self.tabs = self.tab_box.tabs
         self.stack = self.tab_box.stack
-        self._engine_report = None
         self.stack.currentChanged.connect(
             lambda i: i == self.stack.count() - 1 and self._engine_report is None and self._check_engine())
         body = QVBoxLayout()
@@ -1457,13 +1573,20 @@ class PDFExportDialog(QDialog):
         self.log_btn.clicked.connect(self._show_logs)
         self.debug_cb.toggled.connect(self.log_btn.setVisible)
         form.addRow(_t("grp_debug") + ":", self._hrow(self.debug_cb, 6, self.log_btn))
+        self.overview_cb = QCheckBox(_t("cb_overview_button"))
+        self.overview_cb.toggled.connect(_set_overview_button)
+        form.addRow(_t("grp_deck_screen") + ":", self.overview_cb)
 
         form.addRow(macui.separator())
-        self.engine_status = QLabel(_t("engine_checking"))
+        self.engine_status = QLabel()
+        self.engine_status.setObjectName("Secondary")
+        self.engine_status.setTextFormat(Qt.TextFormat.RichText)
         self.engine_status.setWordWrap(True)
         self.engine_status.setMinimumWidth(300)
         self.engine_status.setMaximumWidth(420)
         form.addRow(_t("grp_engine") + ":", self.engine_status)
+        self._engine_report = None
+        self._show_engine_status()  # last known state; re-checked quietly on the first visit
         self.engine_check_btn = QPushButton(_t("btn_engine_check"))
         self.engine_check_btn.clicked.connect(lambda: self._check_engine(force=True))
         self.engine_setup_btn = QPushButton(_t("btn_engine_setup"))
@@ -1566,16 +1689,27 @@ class PDFExportDialog(QDialog):
         def first(*paths):
             return next((p for p in paths if p and os.path.exists(p)), None)
 
-        report = {
-            "macos": sys.platform == "darwin",
-            "brew": first(shutil.which("brew"), "/opt/homebrew/bin/brew", "/usr/local/bin/brew"),
-            "python": first("/opt/homebrew/opt/python@3.14/bin/python3.14",
-                            "/usr/local/opt/python@3.14/bin/python3.14", shutil.which("python3.14")),
-            "pango": bool(first("/opt/homebrew/lib/libpango-1.0.0.dylib",
-                                "/usr/local/lib/libpango-1.0.0.dylib")),
-        }
-        self._weasy_python_cache = None
+        platform = _engine_platform()
         logs = []
+        if platform == "windows":
+            dll_dirs = _win_dll_dirs()
+            report = {
+                "winget": shutil.which("winget"),
+                "python": _win_base_python(logs) or (_win_engine_python() if _win_engine_installed() else None),
+                "msys2": _msys2_bash(),
+                "pango": dll_dirs[0] if dll_dirs else None,
+                "venv": _win_engine_dir() if _win_engine_installed() else None,
+            }
+        else:
+            report = {
+                "brew": first(shutil.which("brew"), "/opt/homebrew/bin/brew", "/usr/local/bin/brew"),
+                "python": first("/opt/homebrew/opt/python@3.14/bin/python3.14",
+                                "/usr/local/opt/python@3.14/bin/python3.14", shutil.which("python3.14")),
+                "pango": bool(first("/opt/homebrew/lib/libpango-1.0.0.dylib",
+                                    "/usr/local/lib/libpango-1.0.0.dylib")),
+            }
+        report.update(platform=platform, macos=platform == "mac")
+        self._weasy_python_cache = None
         try:
             report["engine"] = self._find_weasy_python(logs)
         except Exception as e:
@@ -1591,8 +1725,9 @@ class PDFExportDialog(QDialog):
             callbacks.append(then)
         if getattr(self, "_engine_thread", None) is not None:
             return  # a check is already running; its result goes to every waiting caller
-        self.engine_status.setText(_t("engine_checking"))
-        self.engine_check_btn.setEnabled(False)
+        if force:
+            self.engine_status.setText(_t("engine_checking"))
+            self.engine_check_btn.setEnabled(False)
         box = {}
 
         def work():
@@ -1607,6 +1742,10 @@ class PDFExportDialog(QDialog):
                 return
             self._engine_thread = None
             self._engine_report = box["report"]
+            state = "ok" if self._engine_report.get("engine") else "missing"
+            if _store.settings.get("engine_state") != state:
+                _store.update_settings({"engine_state": state})
+                _store.save()
             self.engine_check_btn.setEnabled(True)
             self._show_engine_status()
             waiting, self._engine_callbacks = self._engine_callbacks, []
@@ -1616,15 +1755,22 @@ class PDFExportDialog(QDialog):
         QTimer.singleShot(150, poll)
 
     def _show_engine_status(self):
-        r = self._engine_report or {}
+        r = self._engine_report
+        if r is None:  # not probed in this session yet: show the last known result
+            state = _store.settings.get("engine_state", "")
+            if not state:
+                self.engine_status.setText(html_module.escape(_t("engine_checking")))
+                return
+            r = {"engine": state == "ok"}
+        supported = r.get("platform", _engine_platform()) in ("mac", "windows")
         if r.get("engine"):
-            self.engine_status.setText("\u25cf  " + _t("engine_ok"))
-            self.engine_status.setStyleSheet("color: #28a745;")
+            dot, text = '<span style="color:#34c759;">\u25cf</span>', _t("engine_ok")
         else:
-            self.engine_status.setText("\u25cb  " + _t(
-                "engine_missing" if r.get("macos", True) else "eng_unsupported"))
-            self.engine_status.setStyleSheet("")
-        self.engine_setup_btn.setEnabled(bool(r.get("macos", True)))
+            dot = "\u25cb"
+            text = _t("engine_missing" if supported else "eng_unsupported")
+        # quiet secondary text; only the dot carries the colour
+        self.engine_status.setText("{}&nbsp; {}".format(dot, html_module.escape(text)))
+        self.engine_setup_btn.setEnabled(supported)
 
     def _open_engine_setup(self):
         dlg = EngineSetupDialog(self)
@@ -1727,11 +1873,11 @@ class PDFExportDialog(QDialog):
         finally:
             self._loading = was_loading
 
-    def refresh_collection(self):
-        """Re-read the deck list when the window is shown again; keeps the selection and
-        re-detects the note type of the card being studied."""
+    def refresh_collection(self, deck=None):
+        """Re-read the deck list when the window is shown again; keeps the selection (or
+        selects `deck`) and re-detects the note type of the card being studied."""
         self._detect_pending = True
-        self.select_deck(self._sel())
+        self.select_deck(deck or self._sel())
 
     def _populate_decks(self, preferred=None):
         try:
@@ -1748,7 +1894,6 @@ class PDFExportDialog(QDialog):
         self.deck_combo.clear()
         for n in sorted(top.keys()):
             self.deck_combo.addItem(n, top[n])
-        self.deck_combo.blockSignals(False)
         target = preferred
         if not target:
             try:
@@ -1760,6 +1905,9 @@ class PDFExportDialog(QDialog):
             i = self.deck_combo.findText(target.split("::")[0])
             if i >= 0:
                 self.deck_combo.setCurrentIndex(i)
+        # signals stay blocked until the selection is final: the field table and the card
+        # count are rebuilt once below, not once per intermediate index change
+        self.deck_combo.blockSignals(False)
         self._want_sub = target
         self._on_deck_changed()
 
@@ -1783,7 +1931,6 @@ class PDFExportDialog(QDialog):
                 else:
                     display = parts[0]
                 self.subdeck_combo.addItem(display, d.name)
-        self.subdeck_combo.blockSignals(False)
         for combo in (self.deck_combo, self.subdeck_combo):
             self._fit_popup_width(combo)
         want = getattr(self, "_want_sub", None)
@@ -1798,6 +1945,7 @@ class PDFExportDialog(QDialog):
             i = self.subdeck_combo.findData(want)
             if i >= 0:
                 self.subdeck_combo.setCurrentIndex(i)
+        self.subdeck_combo.blockSignals(False)
         self._on_subdeck_changed()
 
     @staticmethod
@@ -2135,6 +2283,12 @@ class PDFExportDialog(QDialog):
     def _vendor_dir():
         return os.path.join(os.path.dirname(__file__), ".vendor")
 
+    @classmethod
+    def _engine_vendor_dir(cls):
+        """The bundled packages to put first on the engine's sys.path, or "" where they cannot load
+        (they are macOS builds; elsewhere WeasyPrint comes from the interpreter's own packages)."""
+        return cls._vendor_dir() if _engine_platform() == "mac" else ""
+
     @staticmethod
     def _isolated_python_env():
         env = os.environ.copy()
@@ -2142,6 +2296,11 @@ class PDFExportDialog(QDialog):
             env.pop(key, None)
         env["PYTHONNOUSERSITE"] = "1"
         env["PYTHONDONTWRITEBYTECODE"] = "1"
+        if _engine_platform() == "windows":
+            dll_dirs = _win_dll_dirs()
+            if dll_dirs:  # where WeasyPrint looks for Pango (vendored text/ffi.py)
+                env["WEASYPRINT_DLL_DIRECTORIES"] = ";".join(dll_dirs)
+            return env
         path = env.get("PATH", "")
         parts = [p for p in path.split(os.pathsep) if p]
         for extra in (
@@ -2181,49 +2340,56 @@ class PDFExportDialog(QDialog):
         if cached and os.path.exists(cached):
             return cached
 
-        vendor_dir = self._vendor_dir()
+        vendor_dir = self._engine_vendor_dir()
+        windows = _engine_platform() == "windows"
         candidates = []
-        launcher_path = os.path.join(vendor_dir, "bin", "weasyprint")
-        try:
-            with open(launcher_path, "r", encoding="utf-8") as f:
-                first_line = f.readline().strip()
-            if first_line.startswith("#!"):
-                candidates.append(first_line[2:].strip())
-        except OSError:
-            pass
+        if windows:
+            candidates = [os.environ.get("ANKI_PDFFER_PYTHON"), _win_engine_python()]
+        else:
+            launcher_path = os.path.join(self._vendor_dir(), "bin", "weasyprint")
+            try:
+                with open(launcher_path, "r", encoding="utf-8") as f:
+                    first_line = f.readline().strip()
+                if first_line.startswith("#!"):
+                    candidates.append(first_line[2:].strip())
+            except OSError:
+                pass
 
-        for candidate in [
-            os.environ.get("ANKI_PDFFER_PYTHON"),
-            "/opt/homebrew/opt/python@3.14/bin/python3.14",
-            shutil.which("python3.14"),
-            "/opt/homebrew/bin/python3",
-            "/usr/local/bin/python3",
-            shutil.which("python3"),
-            "/usr/bin/python3",
-        ]:
-            if candidate and candidate not in candidates:
-                candidates.append(candidate)
+            for candidate in [
+                os.environ.get("ANKI_PDFFER_PYTHON"),
+                "/opt/homebrew/opt/python@3.14/bin/python3.14",
+                shutil.which("python3.14"),
+                "/opt/homebrew/bin/python3",
+                "/usr/local/bin/python3",
+                shutil.which("python3"),
+                "/usr/bin/python3",
+            ]:
+                if candidate and candidate not in candidates:
+                    candidates.append(candidate)
 
         probe = (
             "import os, sys\n"
             "vendor_dir = sys.argv[1]\n"
-            "sys.path.insert(0, vendor_dir)\n"
+            "if vendor_dir:\n"
+            "    sys.path.insert(0, vendor_dir)\n"
             "from weasyprint import HTML\n"
             "print(sys.executable)\n"
         )
         for candidate in candidates:
             if not candidate:
                 continue
-            command = self._python_command(candidate)
-            if not command:
+            command = [candidate] if windows else self._python_command(candidate)
+            if not command or not os.path.exists(command[0]):
                 continue
             try:
                 result = subprocess.run(
                     command + ["-I", "-B", "-c", probe, vendor_dir],
                     capture_output=True,
                     text=True,
-                    timeout=10,
+                    # first start on Windows (DLL loading, antivirus scans) can be slow
+                    timeout=40 if windows else 10,
                     env=self._isolated_python_env(),
+                    **_no_console(),
                 )
             except Exception as e:
                 logs.append("Weasy probe error [{}]: {}".format(candidate, e))
@@ -2763,8 +2929,8 @@ class PDFExportDialog(QDialog):
         self._external_export_result = {"success": False, "logs": logs}
 
     def _export_pdf_via_weasyprint(self, path, html_path, logs, font_debug):
-        vendor_dir = self._vendor_dir()
-        if not os.path.isdir(vendor_dir):
+        vendor_dir = self._engine_vendor_dir()
+        if vendor_dir and not os.path.isdir(vendor_dir):
             logs.append("PDF engine: WeasyPrint unavailable (.vendor missing)")
             return False
 
@@ -2776,8 +2942,11 @@ class PDFExportDialog(QDialog):
         script = (
             "import json, os, shutil, subprocess, sys, tempfile\n"
             "from xml.sax.saxutils import escape\n"
+            "sys.stdout.reconfigure(encoding='utf-8', errors='replace')  # Windows pipes default to ANSI\n"
+            "sys.stderr.reconfigure(encoding='utf-8', errors='replace')\n"
             "vendor_dir, html_path, pdf_path, font_json, layout_json = sys.argv[1:6]\n"
-            "sys.path.insert(0, vendor_dir)\n"
+            "if vendor_dir:\n"
+            "    sys.path.insert(0, vendor_dir)\n"
             "try:\n"
             "    font_info = json.loads(font_json)\n"
             "except Exception:\n"
@@ -2793,7 +2962,8 @@ class PDFExportDialog(QDialog):
             "        '/opt/homebrew/etc/fonts/fonts.conf',\n"
             "        '/usr/local/etc/fonts/fonts.conf',\n"
             "        '/etc/fonts/fonts.conf',\n"
-            "    ]\n"
+            "    ] + [os.path.normpath(os.path.join(d, os.pardir, 'etc', 'fonts', 'fonts.conf'))\n"
+            "         for d in os.environ.get('WEASYPRINT_DLL_DIRECTORIES', '').split(';') if d]\n"
             "    include_path = next((p for p in config_candidates if p and os.path.exists(p)), None)\n"
             "    fd, config_path = tempfile.mkstemp(prefix='anki-pdffer-fonts-', suffix='.conf')\n"
             "    with os.fdopen(fd, 'w', encoding='utf-8') as config:\n"
@@ -2803,7 +2973,9 @@ class PDFExportDialog(QDialog):
             "        if include_path:\n"
             "            config.write('  <include>{}</include>\\n'.format(escape(include_path)))\n"
             "        else:\n"
-            "            for font_dir in ('/System/Library/Fonts', '/Library/Fonts', os.path.expanduser('~/Library/Fonts')):\n"
+            "            for font_dir in ('/System/Library/Fonts', '/Library/Fonts', os.path.expanduser('~/Library/Fonts'),\n"
+            "                             os.path.join(os.environ.get('WINDIR', 'C:\\\\Windows'), 'Fonts'),\n"
+            "                             os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Microsoft', 'Windows', 'Fonts')):\n"
             "                if os.path.isdir(font_dir):\n"
             "                    config.write('  <dir>{}</dir>\\n'.format(escape(font_dir)))\n"
             "        seen = set()\n"
@@ -2846,7 +3018,11 @@ class PDFExportDialog(QDialog):
             "            font_log('no concrete font families in CSS stack')\n"
             "    from weasyprint import HTML\n"
             + _LAYOUT_PASS_SCRIPT +
-            "    write_optimised(HTML, html_path, pdf_path, layout_json)\n"
+            "    try:\n"
+            "        write_optimised(HTML, html_path, pdf_path, layout_json)\n"
+            "    except AttributeError as e:  # another WeasyPrint version (system install): plain render\n"
+            "        print('Layout pass skipped ({}): {}'.format(getattr(sys.modules.get('weasyprint'), '__version__', '?'), e), flush=True)\n"
+            "        HTML(filename=html_path).write_pdf(pdf_path)\n"
             "finally:\n"
             "    if font_config_path:\n"
             "        try:\n"
@@ -2857,7 +3033,8 @@ class PDFExportDialog(QDialog):
         try:
             if os.path.exists(path):
                 os.remove(path)
-            command = self._python_command(python_bin)
+            windows = _engine_platform() == "windows"
+            command = [python_bin] if windows else self._python_command(python_bin)
             if not command:
                 logs.append("WeasyPrint export error: invalid python [{}]".format(python_bin))
                 return False
@@ -2869,8 +3046,12 @@ class PDFExportDialog(QDialog):
                 ],
                 capture_output=True,
                 text=True,
-                timeout=120,
+                encoding="utf-8",
+                errors="replace",
+                # Windows: the first render also builds fontconfig's cache of the system fonts
+                timeout=300 if windows else 120,
                 env=self._isolated_python_env(),
+                **_no_console(),
             )
             if result.stdout:
                 for line in result.stdout.strip().splitlines():
@@ -3042,6 +3223,7 @@ class PDFExportDialog(QDialog):
             "grid": self.grid_cb.isChecked(),
             "language": self.lang_combo.currentData() or "en",
             "debug": self.debug_cb.isChecked(),
+            "overview_button": self.overview_cb.isChecked(),
             "high_contrast": self.high_contrast_cb.isChecked(),
             "qa_layout": self.qa_combo.currentIndex(),
             "cloze_mode": self.cloze_combo.currentIndex(),
@@ -3083,6 +3265,7 @@ class PDFExportDialog(QDialog):
             self._set_combo(self.card_style_combo, s["card_style"])
             self.grid_cb.setChecked(s["grid"])
             self.debug_cb.setChecked(s["debug"])
+            self.overview_cb.setChecked(s["overview_button"])
             self.high_contrast_cb.setChecked(s["high_contrast"])
             self._set_combo(self.qa_combo, s["qa_layout"])
             self._set_combo(self.cloze_combo, s["cloze_mode"])
@@ -3103,7 +3286,8 @@ class PDFExportDialog(QDialog):
         for rg in (self.theme_radio, self.width_radio, self.layout_radio, self.render_radio, self.tabs):
             rg.group.idToggled.connect(sched)
         for cb in (self.show_title_cb, self.card_numbers_cb, self.zebra_cb, self.high_contrast_cb,
-                   self.strip_html_cb, self.grid_cb, self.debug_cb, self.page_numbers_cb):
+                   self.strip_html_cb, self.grid_cb, self.debug_cb, self.page_numbers_cb,
+                   self.overview_cb):
             cb.toggled.connect(sched)
         for sp in (self.fontsize_spin, self.width_spin, self.margin_spin, self.top_margin_spin,
                    self.padding_spin, self.gap_spin, self.lh_spin, self.img_h_spin):
@@ -4364,23 +4548,33 @@ _dlg = None
 
 
 class EngineSetupDialog(QDialog):
-    """Guided, one-click setup of what WeasyPrint needs on macOS (Homebrew: Python 3.14 + Pango).
+    """Guided, one-click setup of what WeasyPrint needs.
 
-    With Homebrew present the install runs right here with live output. Without it, a Terminal
-    window opens with the official Homebrew installer followed by the two packages, because the
-    Homebrew installer needs the user's password and must run interactively.
+    macOS (Homebrew: Python 3.14 + Pango for the bundled WeasyPrint): with Homebrew present the
+    install runs right here with live output. Without it, a Terminal window opens with the official
+    Homebrew installer followed by the two packages, because the Homebrew installer needs the
+    user's password and must run interactively.
+
+    Windows: Python (winget), Pango from MSYS2 (winget + pacman) and WeasyPrint itself in a private
+    virtual environment in user_files/, one step after another with live output. Without winget,
+    the download pages of Python and MSYS2 open instead; the remaining steps run once they exist.
     """
 
     PACKAGES = ["python@3.14", "pango"]
     BREW_INSTALLER = "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh"
+    PACMAN = "pacman -Syu --noconfirm --needed " + WIN_PANGO_PACKAGE
+    WIN_PAGES = {"python": "https://www.python.org/downloads/windows/", "msys2": "https://www.msys2.org/"}
 
     def __init__(self, owner):
         super().__init__(owner)
         self.owner = owner
+        self.windows = _engine_platform() == "windows"
         self.setObjectName("PdfferWindow")  # same window background as the export window
         self.setWindowTitle(_t("eng_title"))
         self.setMinimumWidth(560)
         self.proc = None
+        self.steps = []
+        self._closing = False
         root = QVBoxLayout(self)
         root.setContentsMargins(22, 20, 22, 18)
         root.setSpacing(12)
@@ -4390,21 +4584,26 @@ class EngineSetupDialog(QDialog):
         f.setBold(True)
         title.setFont(f)
         root.addWidget(title)
-        intro = QLabel(_t("eng_intro"))
+        intro = QLabel(_t("eng_intro_win" if self.windows else "eng_intro"))
         intro.setWordWrap(True)
         intro.setObjectName("Secondary")
         root.addWidget(intro)
 
+        if self.windows:
+            parts = (("python", "Python 3.10+"), ("pango", "Pango (MSYS2)"),
+                     ("venv", "WeasyPrint " + WEASYPRINT_VERSION), ("engine", _t("eng_test")))
+        else:
+            parts = (("brew", "Homebrew"), ("python", "Python 3.14"),
+                     ("pango", "Pango"), ("engine", _t("eng_test")))
         self.rows = {}
         grid = QGridLayout()
         grid.setHorizontalSpacing(10)
         grid.setVerticalSpacing(8)
-        for i, (key, label) in enumerate((("brew", "Homebrew"), ("python", "Python 3.14"),
-                                          ("pango", "Pango"), ("engine", _t("eng_test")))):
+        for i, (key, label) in enumerate(parts):
             mark = QLabel("\u2026")
             mark.setFixedWidth(18)
             name = QLabel(label)
-            detail = QLabel("")
+            detail = macui.ElidedLabel("")  # long Windows paths must not widen the window
             detail.setObjectName("Secondary")
             for col, w in enumerate((mark, name, detail)):
                 w.setMinimumHeight(22)
@@ -4421,7 +4620,7 @@ class EngineSetupDialog(QDialog):
         self.log.setReadOnly(True)
         self.log.setVisible(False)
         self.log.setMinimumHeight(160)
-        self.log.setStyleSheet("font-family: Menlo, monospace; font-size: 11px;")
+        self.log.setStyleSheet("font-family: Menlo, Consolas, monospace; font-size: 11px;")
         root.addWidget(self.log)
 
         buttons = QHBoxLayout()
@@ -4446,6 +4645,8 @@ class EngineSetupDialog(QDialog):
 
     # ------------------------------------------------------------ status
     def _refresh(self):
+        if self._closing:
+            return
         self.check_btn.setEnabled(False)
         self.install_btn.setEnabled(False)
         for mark, _ in self.rows.values():
@@ -4453,30 +4654,41 @@ class EngineSetupDialog(QDialog):
         self.owner._check_engine(force=True, then=self._show)
 
     def _show(self, r):
+        if self._closing:
+            return
         self.report = r
-        ok = {"brew": bool(r.get("brew")), "python": bool(r.get("python")),
-              "pango": bool(r.get("pango")), "engine": bool(r.get("engine"))}
-        details = {"brew": r.get("brew") or "", "python": r.get("python") or "",
-                   "pango": "", "engine": r.get("engine") or ""}
+        ok = {key: bool(r.get(key)) for key in self.rows}
         for key, (mark, detail) in self.rows.items():
             mark.setText("\u2713" if ok[key] else "\u2715")
             mark.setStyleSheet("color: {}; font-weight: 700;".format("#28a745" if ok[key] else "#ff3b30"))
-            detail.setText(details[key])
-        self.check_btn.setEnabled(True)
-        if not r.get("macos", True):
+            value = r.get(key) if isinstance(r.get(key), str) else ""
+            detail.setText(value)
+            detail.setToolTip(value)
+        busy = self.proc is not None or bool(self.steps)
+        self.check_btn.setEnabled(not busy)
+        if r.get("platform") not in ("mac", "windows"):
             self._say(_t("eng_unsupported"))
             self.install_btn.setEnabled(False)
         elif ok["engine"]:
             self._say(_t("eng_done"))
             self.install_btn.setEnabled(False)
         else:
-            self.install_btn.setEnabled(self.proc is None)
+            self.install_btn.setEnabled(not busy)
 
     def _say(self, text):
         self.note.setText(text)
         self.note.setVisible(bool(text))
 
     def commands(self):
+        if self.windows:
+            bash = _msys2_bash() or "C:\\msys64\\usr\\bin\\bash.exe"
+            return [
+                "winget install -e --id {} --scope user".format(WIN_PYTHON_WINGET_ID),
+                "winget install -e --id {}".format(WIN_MSYS2_WINGET_ID),
+                '"{}" -lc "{}"'.format(bash, self.PACMAN),
+                'py -3 -m venv "{}"'.format(_win_engine_dir()),
+                '"{}" -m pip install weasyprint=={}'.format(_win_engine_python(), WEASYPRINT_VERSION),
+            ]
         brew_line = '/bin/bash -c "$(curl -fsSL {})"'.format(self.BREW_INSTALLER)
         return [brew_line, "brew install " + " ".join(self.PACKAGES)]
 
@@ -4485,37 +4697,152 @@ class EngineSetupDialog(QDialog):
 
     # ------------------------------------------------------------ install
     def _install(self):
-        brew = (getattr(self, "report", None) or {}).get("brew")
+        report = getattr(self, "report", None) or {}
+        if self.windows:
+            self._install_windows(report)
+            return
+        brew = report.get("brew")
         if brew:
-            self._install_with_brew(brew)
+            self._run_steps([(lambda: [brew, "install"] + self.PACKAGES, True)], _t("eng_running"))
         else:
             self._install_in_terminal()
 
-    def _install_with_brew(self, brew):
+    def windows_steps(self, r):
+        """The commands still needed on Windows, as (make_command, required) pairs. Each command is
+        built right before it runs, so it sees what the previous steps installed."""
+        winget = r.get("winget")
+        steps = []
+        if not r.get("python") and not r.get("venv"):
+            # an already installed Python makes winget fail: the venv step below then reports it
+            steps.append((lambda: [winget, "install", "-e", "--id", WIN_PYTHON_WINGET_ID,
+                                   "--scope", "user"] + WINGET_FLAGS, False))
+        if not r.get("pango"):
+            if not r.get("msys2"):
+                steps.append((lambda: [winget, "install", "-e", "--id", WIN_MSYS2_WINGET_ID] + WINGET_FLAGS,
+                              False))
+            # first start sets MSYS2 up; an update of its core ends pacman early, so it runs twice
+            steps += [(lambda: self._msys2(" "), False), (lambda: self._msys2(self.PACMAN), False),
+                      (lambda: self._msys2(self.PACMAN), True)]
+
+        def pip():
+            return [_win_engine_python(), "-m", "pip", "install", "--disable-pip-version-check",
+                    "--no-input", "weasyprint==" + WEASYPRINT_VERSION]
+
+        if not r.get("venv"):
+            steps += [(lambda: self._venv(r), True), (pip, True)]
+        elif not steps:  # everything is there and WeasyPrint still fails: reinstall it
+            steps.append((lambda: pip() + ["--force-reinstall"], True))
+        return steps
+
+    def _install_windows(self, r):
+        # what only winget can install: Python (unless the engine environment exists) and MSYS2
+        missing = [key for key, have in (("python", r.get("python") or r.get("venv")),
+                                         ("msys2", r.get("msys2") or r.get("pango"))) if not have]
+        if missing and not r.get("winget"):
+            for key in missing:
+                QDesktopServices.openUrl(QUrl(self.WIN_PAGES[key]))
+            self._say(_t("eng_win_manual"))
+            return
+        self._run_steps(self.windows_steps(r), _t("eng_win_running"))
+
+    @staticmethod
+    def _msys2(command):
+        bash = _msys2_bash()
+        if not bash:
+            raise RuntimeError("MSYS2 not found in " + ", ".join(_msys2_roots()))
+        return [bash, "-lc", command]
+
+    @staticmethod
+    def _venv(r):
+        known = r.get("python")
+        base = known if known and os.path.isfile(known) else _win_base_python()
+        if not base:
+            raise RuntimeError("No 64-bit Python 3.10 or newer found.")
+        return [base, "-m", "venv", "--clear", _win_engine_dir()]
+
+    def _step_env(self):
+        env = QProcessEnvironment()
+        for key, value in self.owner._isolated_python_env().items():
+            env.insert(key, value)
+        brew = (getattr(self, "report", None) or {}).get("brew")
+        if brew:
+            env.insert("PATH", os.path.dirname(brew) + ":" + env.value("PATH", "/usr/bin:/bin"))
+            env.insert("HOMEBREW_NO_INSTALL_CLEANUP", "1")
+        if self.windows:
+            env.insert("PYTHONIOENCODING", "utf-8")
+        return env
+
+    def _run_steps(self, steps, message):
+        self.steps = list(steps)
         self.install_btn.setEnabled(False)
+        self.check_btn.setEnabled(False)
         self.log.clear()
         self.log.setVisible(True)
-        self._say(_t("eng_running"))
-        self.proc = QProcess(self)
-        env = QProcessEnvironment.systemEnvironment()
-        env.insert("PATH", os.path.dirname(brew) + ":" + env.value("PATH", "/usr/bin:/bin"))
-        env.insert("HOMEBREW_NO_INSTALL_CLEANUP", "1")
-        self.proc.setProcessEnvironment(env)
-        self.proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
-        self.proc.readyReadStandardOutput.connect(self._pump)
-        self.proc.finished.connect(self._installed)
-        self.proc.start(brew, ["install"] + self.PACKAGES)
+        self._say(message)
+        self._next_step()
 
-    def _pump(self):
-        text = bytes(self.proc.readAllStandardOutput()).decode("utf-8", "replace")
-        self.log.appendPlainText(text.rstrip())
-        self.log.verticalScrollBar().setValue(self.log.verticalScrollBar().maximum())
+    def _next_step(self):
+        if self._closing:
+            return
+        if not self.steps:
+            self._refresh()
+            return
+        make, required = self.steps.pop(0)
+        try:
+            command = make()
+        except Exception as e:
+            self.log.appendPlainText(str(e))
+            self._step_finished(1, required)
+            return
+        self.log.appendPlainText("\n> " + " ".join(command))
+        proc = self.proc = QProcess(self)
+        proc.setProcessEnvironment(self._step_env())
+        proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        proc.readyReadStandardOutput.connect(lambda: self._pump(proc))
+        proc.finished.connect(lambda code, _status: self._step_done(proc, code, required))
+        # a program that cannot start (no winget, a removed Python) never emits finished
+        proc.errorOccurred.connect(lambda error: error == QProcess.ProcessError.FailedToStart
+                                   and self._step_done(proc, -1, required))
+        proc.start(command[0], command[1:])
 
-    def _installed(self, code, _status):
+    def _step_done(self, proc, code, required):
+        if proc is not self.proc or self._closing:
+            return
+        self._pump(proc)
         self.proc = None
+        proc.deleteLater()
+        self._step_finished(code, required)
+
+    def _step_finished(self, code, required):
         if code != 0:
+            self.log.appendPlainText("[exit code {}]".format(code))
+        if code != 0 and required:
+            self.steps = []
             self._say(_t("eng_failed"))
-        self._refresh()
+            self._refresh()
+        else:
+            self._next_step()
+
+    @staticmethod
+    def clean_output(raw):
+        """Console output for the log: spinners and progress bars redraw a line with \\r and \\b."""
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            import locale
+            text = raw.decode(locale.getpreferredencoding(False) or "latin-1", "replace")
+        lines = []
+        for line in text.replace("\r\n", "\n").split("\n"):
+            line = line.split("\r")[-1].replace("\b", "").rstrip()
+            if line.strip() and line.strip() not in ("-", "\\", "|", "/"):
+                lines.append(line)
+        return "\n".join(lines)
+
+    def _pump(self, proc):
+        text = self.clean_output(bytes(proc.readAllStandardOutput()))
+        if text:
+            self.log.appendPlainText(text)
+            self.log.verticalScrollBar().setValue(self.log.verticalScrollBar().maximum())
 
     def _install_in_terminal(self):
         script = "\n".join([
@@ -4535,14 +4862,19 @@ class EngineSetupDialog(QDialog):
         QDesktopServices.openUrl(QUrl.fromLocalFile(path))
         self._say(_t("eng_terminal"))
 
-    def reject(self):
-        if self.proc is not None:  # keep the install running only while the guide is open
+    def _stop(self):
+        # the install runs only while the guide is open
+        self._closing = True
+        self.steps = []
+        if self.proc is not None:
             self.proc.kill()
+
+    def reject(self):
+        self._stop()
         super().reject()
 
     def accept(self):
-        if self.proc is not None:
-            self.proc.kill()
+        self._stop()
         super().accept()
 
 
@@ -4554,8 +4886,8 @@ def _dialog_alive(dlg):
         return False
 
 
-def _get_dialog():
-    """Return THE export window, creating it only when needed.
+def _get_dialog(deck=None):
+    """Return THE export window, creating it only when needed (on `deck` if given).
 
     One window is reused for the whole session (so it can be restored instead of
     stacking new ones); it is rebuilt only when the collection/profile changed.
@@ -4568,14 +4900,19 @@ def _get_dialog():
             _dlg.deleteLater()
         _dlg = None
     if _dlg is None:
-        _dlg = PDFExportDialog(mw)
+        _dlg = PDFExportDialog(mw)  # opens on Anki's current deck
+        if deck and _dlg._sel() != deck:
+            _dlg.select_deck(deck)
     elif not _dlg.isVisible():
-        _dlg.refresh_collection()
+        _dlg.refresh_collection(deck)
+    elif deck and _dlg._sel() != deck:
+        _dlg.select_deck(deck)
     return _dlg
 
 
-def show_export_dialog():
-    dlg = _get_dialog()
+def show_export_dialog(deck=None):
+    # QAction.triggered passes a bool as the first argument
+    dlg = _get_dialog(deck if isinstance(deck, str) and deck else None)
     if dlg is None:
         showWarning(_t("msg_no_collection"))
         return
@@ -4636,3 +4973,141 @@ def _retranslate_menu():
     _dev_menu.setTitle(_t("menu_root"))
     action.setText(_t("menu_action"))
     _quick_legacy_action.setText(_t("menu_quick_legacy"))
+
+
+# ---------------------------------------------------------------- deck screen button
+OVERVIEW_CMD = "ankipdffer:export"
+_PDF_ICON = (
+    '<svg width="12" height="13" viewBox="0 0 13 14" fill="none" stroke="currentColor" '
+    'stroke-width="1.25" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">'
+    '<path d="M2 1h6l3 3v9H2z"/><path d="M8 1v3h3"/><path d="M4.5 7.5h4M4.5 10h4"/></svg>'
+)
+# OS X push button (Yosemite–El Capitan): white-to-light-grey gradient, hairline border,
+# 5 px corners, soft drop shadow; it turns blue while pressed. Dark mode gets the graphite
+# version of the pro apps of that time. Anki's own pill style is overridden on purpose.
+_OVERVIEW_CSS = """
+#ankipdffer-overview{margin:6px 0 14px;text-align:center}
+#ankipdffer-overview .pdffer-btn{
+  -webkit-appearance:none;appearance:none;display:inline-flex;align-items:center;gap:6px;
+  height:23px;margin:0;padding:0 13px;box-sizing:border-box;border-radius:5px;cursor:default;
+  font:13px/1 -apple-system,BlinkMacSystemFont,"Helvetica Neue","Segoe UI",Arial,sans-serif;
+  letter-spacing:0;white-space:nowrap;color:#1d1d1f;
+  background:linear-gradient(#fff,#f1f1f1);
+  border:1px solid #c5c5c5;border-bottom-color:#adadad;
+  box-shadow:0 1px 1px rgba(0,0,0,.07),inset 0 1px 0 rgba(255,255,255,.85);
+  transition:none;user-select:none;-webkit-user-select:none}
+#ankipdffer-overview .pdffer-btn svg{flex:none;opacity:.8}
+#ankipdffer-overview .pdffer-btn:hover{background:linear-gradient(#fff,#ececec)}
+#ankipdffer-overview .pdffer-btn:active{
+  color:#fff;background:linear-gradient(#6cb3fa,#0a7aff);
+  border-color:#3d8fe6;border-bottom-color:#2b6fd6;
+  box-shadow:0 1px 1px rgba(0,0,0,.08),inset 0 1px 0 rgba(255,255,255,.25)}
+#ankipdffer-overview .pdffer-btn:active svg{opacity:1}
+#ankipdffer-overview .pdffer-btn:focus{outline:none}
+#ankipdffer-overview .pdffer-btn:focus-visible{
+  box-shadow:0 0 0 3px rgba(59,153,252,.5),inset 0 1px 0 rgba(255,255,255,.85)}
+.night-mode #ankipdffer-overview .pdffer-btn,.nightMode #ankipdffer-overview .pdffer-btn{
+  color:#e9e9eb;background:linear-gradient(#5b5b5e,#47474a);
+  border-color:#2a2a2c;border-bottom-color:#1c1c1e;
+  box-shadow:0 1px 1px rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.13)}
+.night-mode #ankipdffer-overview .pdffer-btn:hover,
+.nightMode #ankipdffer-overview .pdffer-btn:hover{background:linear-gradient(#636366,#4c4c4f)}
+.night-mode #ankipdffer-overview .pdffer-btn:active,
+.nightMode #ankipdffer-overview .pdffer-btn:active{
+  color:#fff;background:linear-gradient(#4a9bf5,#0a6ee0);
+  border-color:#1d4f9a;border-bottom-color:#163f7d;
+  box-shadow:0 1px 1px rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.2)}
+"""
+# The congratulations screen is a page that renders itself after loading, so the button is
+# added from outside and kept below its content.
+_CONGRATS_JS = """
+(function () {
+  if (document.getElementById("ankipdffer-overview")) return;
+  var holder = document.createElement("div");
+  holder.innerHTML = %s;
+  var box = holder.firstChild;
+  box.style.textAlign = "center";
+  box.style.margin = "0 0 28px";
+  document.body.appendChild(box);
+  new MutationObserver(function () {
+    if (document.body.lastElementChild !== box) document.body.appendChild(box);
+  }).observe(document.body, {childList: true});
+})();
+"""
+
+
+def _overview_button_on():
+    return bool(_store.settings.get("overview_button", True))
+
+
+def _overview_button_html():
+    return (
+        '<div id="ankipdffer-overview"><style>{css}</style>'
+        '<button class="pdffer-btn" tabindex="-1" title="{tip}" '
+        'onmousedown="event.preventDefault()" onclick="pycmd(\'{cmd}\');return false;">'
+        '{icon}<span>{label}</span></button></div>'
+    ).format(css=_OVERVIEW_CSS, tip=html_module.escape(_t("tip_overview_pdf")), cmd=OVERVIEW_CMD,
+             icon=_PDF_ICON, label=html_module.escape(_t("btn_overview_pdf")))
+
+
+def _on_overview_content(overview, content):
+    """Deck screen: the button goes centred right below Anki's counts / Study Now table,
+    before anything other add-ons appended (or at the end if the table was reshaped)."""
+    if not _overview_button_on():
+        return
+    table = content.table or ""
+    study = table.find('id="study"')
+    end = table.find("</td></tr></table>", study) if study >= 0 else -1
+    if end >= 0:
+        end += len("</td></tr></table>")
+        content.table = table[:end] + _overview_button_html() + table[end:]
+    else:
+        content.table = table + _overview_button_html()
+
+
+def _on_page_styled(webview):
+    if (mw is None or webview is not getattr(mw, "web", None)
+            or getattr(mw, "state", "") != "overview" or not _overview_button_on()):
+        return
+    try:
+        url = webview.page().url().toString()
+    except Exception:
+        return
+    if "congrats" in url:
+        webview.eval(_CONGRATS_JS % json.dumps(_overview_button_html()))
+
+
+def _on_js_message(handled, message, context):
+    if message != OVERVIEW_CMD:
+        return handled
+    try:
+        cur = mw.col.decks.current()
+    except Exception:
+        cur = None
+    show_export_dialog(cur["name"] if cur else None)
+    try:  # back on the deck screen, Enter keeps starting the review
+        mw.web.eval("var s=document.getElementById('study');if(s)s.focus();")
+    except Exception:
+        pass
+    return True, None
+
+
+def _set_overview_button(on):
+    """Settings checkbox: show or hide the button right away."""
+    on = bool(on)
+    if _overview_button_on() == on:
+        return
+    _store.update_settings({"overview_button": on})
+    if mw is not None and getattr(mw, "state", "") == "overview":
+        mw.overview.refresh()
+
+
+try:
+    from aqt import gui_hooks
+
+    gui_hooks.overview_will_render_content.append(_on_overview_content)
+    gui_hooks.webview_did_receive_js_message.append(_on_js_message)
+    if hasattr(gui_hooks, "webview_did_inject_style_into_page"):
+        gui_hooks.webview_did_inject_style_into_page.append(_on_page_styled)
+except Exception as e:  # never block the menu entry because of the deck screen button
+    logger.error("Deck screen button setup failed", e)

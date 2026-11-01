@@ -174,6 +174,8 @@ Tools → AnkiPdffer → Open export dialog…
 
 Then choose your deck (and optional filter), adjust the tabs, and export.
 
+Or open a deck and click **Export to PDF** below *Study Now* — the window opens on that deck (Settings → *Deck screen* hides the button).
+
 Quick export of the current deck to Legacy HTML:
 
 ```text
@@ -223,7 +225,7 @@ Click any image in the exported HTML to open it fullscreen.
 ## Requirements
 
 * Anki 23.11+
-* PDF export uses the bundled WeasyPrint in an isolated Python process. On macOS this needs **Python 3.14** and **Pango** — **Settings → PDF engine → Set up…** checks them and installs what is missing with one click (or run `brew install python@3.14 pango`). If they are not found, AnkiPdffer falls back to Qt WebEngine's PDF renderer (works everywhere, with simpler pagination). HTML export has no extra requirements.
+* PDF export uses the bundled WeasyPrint in an isolated Python process. On macOS this needs **Python 3.14** and **Pango** — **Settings → PDF engine → Set up…** checks them and installs what is missing with one click (or run `brew install python@3.14 pango`). On Windows the same button installs Python, Pango (MSYS2) and WeasyPrint into the add-on's `user_files` folder (winget is used when available). If they are not found, AnkiPdffer falls back to Qt WebEngine's PDF renderer (works everywhere, with simpler pagination). HTML export has no extra requirements.
 
 ---
 

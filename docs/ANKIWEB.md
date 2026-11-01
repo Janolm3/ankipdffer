@@ -60,6 +60,8 @@ Tools → AnkiPdffer → Open export dialog…
 
 Pick the deck, adjust the tabs (Content, Appearance, Page, Fields, Settings), then Preview PDF or Export PDF.
 
+Or open a deck and click **Export to PDF** below *Study Now*.
+
 Quick export of the current deck to Legacy HTML:
 
 ```
@@ -86,4 +88,4 @@ Click any image in the exported HTML to open it fullscreen.
 ## Requirements
 
 - Anki 23.11+
-- PDF export uses the bundled WeasyPrint. On macOS it needs Python 3.14 and Pango — Settings → PDF engine → Set up… installs them with one click. Without them AnkiPdffer falls back to Anki's built-in PDF renderer. HTML export has no extra requirements.
+- PDF export uses the bundled WeasyPrint. On macOS it needs Python 3.14 and Pango — Settings → PDF engine → Set up… installs them with one click. On Windows the same button installs Python, Pango (MSYS2) and WeasyPrint. Without them AnkiPdffer falls back to Anki's built-in PDF renderer. HTML export has no extra requirements.

@@ -2,6 +2,20 @@
 
 All notable changes to the **AnkiPdffer Dev** add-on will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **Export to PDF button on the deck screen**: a native OS X–style button right below Anki's counts and *Study Now* (also on the "Congratulations" screen) opens AnkiPdffer on that deck. It can be hidden in Settings → *Deck screen*.
+- **PDF engine setup on Windows**: *Settings → PDF engine → Set up…* now installs WeasyPrint on Windows too — Python (winget), Pango from MSYS2 (winget + pacman) and WeasyPrint 68.1 in a private environment inside the add-on's `user_files` folder (kept across updates), step by step with a live log. Without winget, the Python and MSYS2 download pages open and the remaining steps run afterwards. *Copy commands* gives the Windows commands.
+
+### Changed
+- The export window opens faster: the field table is built once instead of once per deck-picker change (reopening went from ~0.7 s to ~0.1 s on a 17,000-card collection).
+- Settings → PDF engine is quieter: grey text with a coloured dot, the last result shows at once and is re-checked silently in the background ("Checking…" only appears after *Check again*).
+- *Reset everything to defaults* looks like a normal button and turns muted red only on hover.
+
+### Fixed
+- The macOS-only bundled packages are no longer put in front of other Pythons, so a WeasyPrint installed for the system Python (Linux) or the private environment (Windows) can load. If another WeasyPrint version cannot run the layout pass, the PDF is rendered without it instead of falling back to the built-in renderer.
+
 ## [1.4.1] - 2026-11-01
 
 ### Changed

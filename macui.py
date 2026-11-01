@@ -23,6 +23,7 @@ LIGHT = dict(
     text="#1d1d1f", secondary="#86868b", disabled="#a8a8ad", control_disabled="#f6f6f6",
     accent="#007aff", accent_pressed="#0062cc", accent_soft="rgba(0,122,255,0.14)",
     destructive="#ff3b30",
+    danger="#bf5a54", danger_pressed="#a94c47", danger_border="#a54843", danger_text="#ffffff",
     track="rgba(118,118,128,0.14)", tab_track="#dbdbdd", thumb="#ffffff", thumb_border="#d2d2d5",
     table="#ffffff", table_line="#e5e5e5", hover="rgba(0,0,0,0.05)",
     scroll="rgba(0,0,0,0.28)", menu="#f6f6f6",
@@ -38,6 +39,7 @@ DARK = dict(
     text="#ececee", secondary="#98989d", disabled="#88888d", control_disabled="#434346",
     accent="#0a84ff", accent_pressed="#0070e0", accent_soft="rgba(10,132,255,0.22)",
     destructive="#ff453a",
+    danger="#97443f", danger_pressed="#863a36", danger_border="#7a3430", danger_text="#f7ecea",
     track="rgba(118,118,128,0.26)", tab_track="#3e3e43", thumb="#68686d", thumb_border="#747479",
     table="#323235", table_line="#3f3f43", hover="rgba(255,255,255,0.06)",
     scroll="rgba(255,255,255,0.30)", menu="#2f2f31",
@@ -205,7 +207,12 @@ QPushButton#Primary {{
 }}
 QPushButton#Primary:pressed {{ background: {accent_pressed}; }}
 QPushButton#Primary:disabled {{ background: {accent_soft}; color: rgba(255,255,255,0.7); border-color: transparent; }}
-QPushButton#Destructive {{ color: {destructive}; }}
+QPushButton#Destructive:hover {{
+    background: {danger}; color: {danger_text}; border: 1px solid {danger_border};
+}}
+QPushButton#Destructive:pressed {{
+    background: {danger_pressed}; color: {danger_text}; border: 1px solid {danger_border};
+}}
 QPushButton#Plain {{
     background: transparent; border: 1px solid transparent; color: {secondary};
     padding: 0; min-height: 22px; min-width: 22px; border-radius: 6px; font-size: 15px;

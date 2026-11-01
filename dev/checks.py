@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import time
 import shutil
 import tempfile
 
@@ -428,9 +429,229 @@ def check_141(col, load_addon, pick):
     # engine probe (the real one: imports WeasyPrint with the bundled vendor dir)
     report = dlg._engine_probe()
     ok(set(report) >= {"macos", "brew", "python", "pango", "engine"}, "engine probe reports every part")
+    mod._store.update_settings({"engine_state": "ok"})
+    dlg._engine_report = None
+    dlg._show_engine_status()
+    label = dlg.engine_status.text()
+    ok(mod._t("engine_ok") in label and "#34c759" in label and dlg.engine_status.objectName() == "Secondary",
+       "engine status: last known result at once, quiet text, only the dot is green")
+    dlg._check_engine()
+    ok(dlg.engine_status.text() == label and dlg.engine_check_btn.isEnabled(),
+       "automatic re-check is silent (no 'Checking…', button stays enabled)")
+    started = time.time()
+    while dlg._engine_thread is not None and time.time() - started < 90:
+        app.processEvents()
+        time.sleep(0.05)
+    ok(mod._store.settings["engine_state"] in ("ok", "missing") and "engine_state" in mod.MACHINE_KEYS,
+       "check result remembered for the next session ({})".format(mod._store.settings["engine_state"]))
+    css = mod.macui.stylesheet(False)
+    ok(dlg.reset_btn.objectName() == "Destructive" and "QPushButton#Destructive {" not in css
+       and "background: #bf5a54" in css.split("QPushButton#Destructive:hover {", 1)[1][:80],
+       "Reset everything looks like any button and fills muted red only on hover")
     dialog = mod.EngineSetupDialog(dlg)
     ok("brew install python@3.14 pango" in dialog.commands()[1], "setup guide offers the brew command")
     dialog.reject()
+    dlg.close()
+    shutil.rmtree(stage, ignore_errors=True)
+
+
+def check_overview_button(col, load_addon, pick):
+    print("Deck screen: Export to PDF button")
+    app, mw, mod, stage = load_addon(col)
+    from types import SimpleNamespace
+
+    study = ('<button id="study" class="but " onclick="pycmd(\'study\');return false;"\n'
+             'title="" autofocus>Study Now</button>')
+    table = ('<table width=400 cellpadding=5><tr><td align=center valign=top>counts</td>'
+             '<td align=center>\n' + study + '</td></tr></table>')
+    other_addon = '<div class="heatmap">stats from another add-on</div>'
+    content = SimpleNamespace(table=table + other_addon)
+    mod._on_overview_content(None, content)
+    t = content.table
+    ok(t.startswith(table) and t.index('<div id="ankipdffer-overview"') == len(table)
+       and t.endswith(other_addon),
+       "button sits right below the counts / Study Now table, above other add-ons")
+    ok("pycmd('ankipdffer:export')" in t and "<svg" in t, "button sends the export command, crisp SVG icon")
+    ok('tabindex="-1"' in t and 'onmousedown="event.preventDefault()"' in t,
+       "button never takes focus, so Enter keeps starting Study Now")
+    ok("%" not in mod._overview_button_html(), "no '%' (Anki fills the deck page with %-formatting)")
+    ok(all(not d["btn_overview_pdf"].endswith(("…", "...")) for d in mod._EXTRA_STRINGS.values()),
+       "button label has no ellipsis in any language")
+    ok(".pdffer-btn{" in t and "border-radius:5px" in t and ".night-mode #ankipdffer-overview" in t,
+       "OS X push-button style with a dark variant")
+    content = SimpleNamespace(table="<table><tr><td>reshaped by another add-on</td></tr></table>")
+    mod._on_overview_content(None, content)
+    ok(content.table.endswith("</button></div>"), "unknown layouts get the button below the table")
+
+    mod._set_overview_button(False)
+    content = SimpleNamespace(table=table)
+    mod._on_overview_content(None, content)
+    ok(content.table == table, "switched off in Settings: deck screen untouched")
+    mod._set_overview_button(True)
+    ok("overview_button" in mod.MACHINE_KEYS, "button switch is not part of option presets")
+
+    ok(mod._on_js_message((False, None), "study", None) == (False, None), "other bridge commands untouched")
+    col.decks.select(col.decks.id_for_name("Pharma::Cardio"))
+    handled = mod._on_js_message((False, None), mod.OVERVIEW_CMD, None)
+    ok(handled == (True, None) and mod._dlg is not None and mod._dlg._sel() == "Pharma::Cardio",
+       "button opens the window on the deck being viewed")
+    col.decks.select(col.decks.id_for_name("Lab::Long"))
+    mod._on_js_message((False, None), mod.OVERVIEW_CMD, None)
+    ok(mod._dlg._sel() == "Lab::Long", "an open window switches to the newly viewed deck")
+
+    # opening must build the field table once, not once per combo-box signal
+    loads = []
+    original = mod.PDFExportDialog._load_fields
+    mod.PDFExportDialog._load_fields = lambda self: (loads.append(1), original(self))[1]
+    try:
+        mod._dlg.hide()
+        col.decks.select(col.decks.id_for_name("Pharma::Cardio"))
+        mod._on_js_message((False, None), mod.OVERVIEW_CMD, None)
+        ok(len(loads) == 1 and mod._dlg._sel() == "Pharma::Cardio",
+           "reopening on another deck builds the field table once ({}x)".format(len(loads)))
+        mod._dlg.close()
+        mod._dlg = None
+        loads.clear()
+        mod._on_js_message((False, None), mod.OVERVIEW_CMD, None)
+        ok(len(loads) == 1, "a new window builds the field table once ({}x)".format(len(loads)))
+    finally:
+        mod.PDFExportDialog._load_fields = original
+    mod._dlg.close()
+    shutil.rmtree(stage, ignore_errors=True)
+
+
+def check_windows(col, load_addon, pick):
+    """The Windows engine setup, simulated on this machine: platform switched, a fake MSYS2 and a
+    fake engine environment on disk, real QProcess runs for the install step queue."""
+    import sys
+    import time
+    print("Windows PDF engine (simulated)")
+    app, mw, mod, stage = load_addon(col)
+    dlg = mod.PDFExportDialog(mw)
+    fake = tempfile.mkdtemp(prefix="pdffer-win-")
+    saved = {name: getattr(mod, name) for name in ("_engine_platform", "_win_python_candidates", "QDesktopServices")}
+    saved_env = {k: os.environ.get(k) for k in ("ANKI_PDFFER_MSYS2", "WEASYPRINT_DLL_DIRECTORIES", "ANKI_PDFFER_PYTHON")}
+
+    def wait(cond, seconds=60):
+        end = time.time() + seconds
+        while not cond() and time.time() < end:
+            app.processEvents()
+            time.sleep(0.02)
+        return cond()
+
+    opened = []
+
+    class FakeDesktop:
+        @staticmethod
+        def openUrl(url):
+            opened.append(url.toString())
+            return True
+
+    try:
+        ok(dlg._engine_vendor_dir() == dlg._vendor_dir(), "macOS keeps the bundled vendor dir")
+        mod._engine_platform = lambda: "windows"
+        mod.QDesktopServices = FakeDesktop
+        mod._win_python_candidates = lambda: [["/nonexistent/python.exe"], ["/usr/bin/false"], [sys.executable]]
+        for k in saved_env:
+            os.environ.pop(k, None)
+        os.environ["ANKI_PDFFER_MSYS2"] = fake
+        ok(dlg._engine_vendor_dir() == "", "Windows never loads the macOS-only vendor dir")
+        ok(mod._msys2_bash() is None and mod._win_dll_dirs() == [], "no MSYS2 yet: nothing detected")
+
+        bash = os.path.join(fake, "usr", "bin", "bash.exe")
+        dll_dir = os.path.join(fake, "ucrt64", "bin")
+        for path in (bash, os.path.join(dll_dir, mod.WIN_PANGO_DLL)):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            open(path, "w").close()
+        ok(mod._msys2_bash() == bash, "MSYS2 found in its root")
+        ok(mod._win_dll_dirs() == [dll_dir], "Pango DLLs found in MSYS2's UCRT64 bin")
+        env = dlg._isolated_python_env()
+        ok(env.get("WEASYPRINT_DLL_DIRECTORIES") == dll_dir, "engine processes get WEASYPRINT_DLL_DIRECTORIES")
+        ok(env.get("PATH") == os.environ.get("PATH"), "no Homebrew paths added on Windows")
+
+        ok(mod._win_base_python() == sys.executable, "base Python found (broken candidates skipped)")
+        ok(mod._win_engine_dir().startswith(os.path.join(stage, "user_files")),
+           "engine environment lives in user_files (kept across updates)")
+        ok(not mod._win_engine_installed(), "engine environment not installed yet")
+
+        report = dlg._engine_probe()
+        ok(set(report) >= {"platform", "winget", "python", "msys2", "pango", "venv", "engine"},
+           "Windows probe reports every part")
+        ok(report["platform"] == "windows" and report["pango"] == dll_dir and report["python"] == sys.executable
+           and not report["venv"] and not report["engine"], "Windows probe: Python + Pango found, engine missing")
+
+        dialog = mod.EngineSetupDialog(dlg)
+        ok(list(dialog.rows) == ["python", "pango", "venv", "engine"], "setup guide shows the Windows parts")
+        wait(lambda: getattr(dlg, "_engine_thread", None) is None and getattr(dialog, "report", None))
+        marks = {k: m.text() for k, (m, _) in dialog.rows.items()}
+        ok(marks == {"python": "\u2713", "pango": "\u2713", "venv": "\u2715", "engine": "\u2715"},
+           "setup guide marks what is there ({})".format(marks))
+        ok(dialog.install_btn.isEnabled(), "Install is offered on Windows")
+        text = "\n".join(dialog.commands())
+        ok("winget install -e --id Python.Python.3.13" in text and "MSYS2.MSYS2" in text
+           and "mingw-w64-ucrt-x86_64-pango" in text and "weasyprint==68.1" in text,
+           "Copy commands gives the Windows commands")
+
+        nothing = {"platform": "windows", "winget": "C:\\winget.exe"}
+        steps = dialog.windows_steps(nothing)
+        commands = [make() for make, _ in steps]
+        ok(len(steps) == 7 and commands[0][:5] == ["C:\\winget.exe", "install", "-e", "--id", "Python.Python.3.13"]
+           and "--scope" in commands[0], "fresh Windows: Python, MSYS2, Pango, environment, WeasyPrint")
+        ok(commands[2] == [bash, "-lc", " "] and commands[3][2].startswith("pacman -Syu")
+           and [r for _, r in steps] == [False, False, False, False, True, True, True],
+           "pacman runs twice, only the last run must succeed")
+        ok(commands[5] == [sys.executable, "-m", "venv", "--clear", mod._win_engine_dir()]
+           and commands[6][1:5] == ["-m", "pip", "install", "--disable-pip-version-check"],
+           "engine environment made from the found Python, then WeasyPrint installed into it")
+        ok(len(dialog.windows_steps(dict(report))) == 2, "Python + Pango present: only environment + WeasyPrint")
+        ok("--force-reinstall" in dialog.windows_steps(dict(report, venv="x"))[0][0](),
+           "all present but failing: WeasyPrint reinstalled")
+
+        dialog._install_windows({"platform": "windows"})
+        ok(len(opened) == 2 and "python.org" in opened[0] and "msys2.org" in opened[1]
+           and dialog.note.text() == mod._t("eng_win_manual"), "no winget: download pages open instead")
+        opened.clear()
+        ran = []
+        dialog._run_steps = lambda steps, message: ran.append((len(steps), message))
+        dialog._install_windows(dict(report, winget=None))
+        del dialog._run_steps
+        ok(not opened and ran == [(2, mod._t("eng_win_running"))], "no winget needed when Python and MSYS2 exist")
+
+        raw = b"Downloading\r 10%\r100%\r\n-\r\\\r|\rDone\n"
+        ok(dialog.clean_output(raw) == "100%\nDone", "winget progress redraws are cleaned from the log")
+
+        py = sys.executable
+        dialog._run_steps([(lambda: [py, "-c", "print('step one')"], True),
+                           (lambda: [py, "-c", "import sys; sys.exit(3)"], False),
+                           (lambda: [py, "-c", "print('step three')"], True)], "x")
+        wait(lambda: dialog.proc is None and not dialog.steps)
+        log = dialog.log.toPlainText()
+        ok("step one" in log and "[exit code 3]" in log and "step three" in log,
+           "steps run in order; an optional step may fail")
+        wait(lambda: getattr(dlg, "_engine_thread", None) is None)
+        dialog._run_steps([(lambda: ["/nonexistent/winget.exe"], True),
+                           (lambda: [py, "-c", "print('never')"], True)], "x")
+        wait(lambda: dialog.proc is None and not dialog.steps)
+        ok("never" not in dialog.log.toPlainText() and dialog.note.text() == mod._t("eng_failed"),
+           "a required step that cannot start stops the install")
+        wait(lambda: getattr(dlg, "_engine_thread", None) is None)
+        dialog.reject()
+        ok(dialog._closing and not dialog.steps, "closing the guide stops the install")
+
+        venv_py = mod._win_engine_python()
+        os.makedirs(os.path.dirname(venv_py), exist_ok=True)
+        open(venv_py, "w").close()
+        os.makedirs(os.path.join(mod._win_engine_dir(), "Lib", "site-packages", "weasyprint-68.1.dist-info"))
+        ok(mod._win_engine_installed(), "engine environment detected by its pinned WeasyPrint")
+    finally:
+        for name, value in saved.items():
+            setattr(mod, name, value)
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(fake, ignore_errors=True)
     dlg.close()
     shutil.rmtree(stage, ignore_errors=True)
 
@@ -443,6 +664,8 @@ def run_checks(col, load_addon, pick):
     check_responsive(col, load_addon, pick)
     check_notetypes(col, load_addon, pick)
     check_141(col, load_addon, pick)
+    check_overview_button(col, load_addon, pick)
+    check_windows(col, load_addon, pick)
     print("\n{} check(s) failed".format(len(FAILS)) if FAILS else "\nall checks passed")
     for f in FAILS:
         print("  - " + f)
