@@ -9,6 +9,7 @@ File layout (settings.json, schema v2)::
       "settings": {...},              # last used global options (autosaved)
       "fields":   {"<note type>": {"<field>": {...field config...}}},
       "presets":  {"<name>": {"settings": {...}, "fields": {...}}},
+      "field_presets": {"<name>": {"fields": {"<field>": {...}}, "order": [{...}, ...]}},
       "window":   {"geometry": "<base64>"}
     }
 
@@ -50,11 +51,12 @@ DEFAULT_SETTINGS = {
     "io_mode": 0,         # 0 all masks at once (one entry per note), 1 one card per mask
     "order": 0,           # 0 deck order, 1 creation date, 2 shuffle
     "page_numbers": False,
+    "tab": 0,             # last tab shown in the window
 }
 
 # Options that describe *this machine / session* rather than the look of an export.
 # They are not part of presets and are left alone by "apply preset".
-MACHINE_KEYS = ("language", "debug")
+MACHINE_KEYS = ("language", "debug", "tab")
 
 DEFAULT_FIELD_CONFIG = {
     "export": True,
@@ -130,6 +132,7 @@ class SettingsStore:
         self.settings = dict(DEFAULT_SETTINGS)
         self.fields = {}
         self.presets = {}
+        self.field_presets = {}
         self.window = {}
         self.load()
 
@@ -154,6 +157,17 @@ class SettingsStore:
                             "settings": coerce_settings(body.get("settings")),
                             "fields": _coerce_fields_map(body.get("fields")),
                         }
+            self.field_presets = {}
+            fpresets = raw.get("field_presets")
+            if isinstance(fpresets, dict):
+                for name, body in fpresets.items():
+                    if isinstance(body, dict):
+                        fields = body.get("fields") if isinstance(body.get("fields"), dict) else {}
+                        order = body.get("order") if isinstance(body.get("order"), list) else []
+                        self.field_presets[str(name)] = {
+                            "fields": {str(f): coerce_field_config(c) for f, c in fields.items()},
+                            "order": [coerce_field_config(c) for c in order],
+                        }
             window = raw.get("window")
             self.window = window if isinstance(window, dict) else {}
         else:  # v1: flat dict of global options
@@ -167,6 +181,7 @@ class SettingsStore:
             "settings": self.settings,
             "fields": self.fields,
             "presets": self.presets,
+            "field_presets": self.field_presets,
             "window": self.window,
         }
         directory = os.path.dirname(self.path) or "."
@@ -230,6 +245,42 @@ class SettingsStore:
 
     def delete_preset(self, name):
         return self.presets.pop(name, None) is not None
+
+    # ------------------------------------------------------- field presets
+    # A field preset is the look of one note type's fields (section, size, style, ...).
+    # It can be applied to any note type: fields match by name first, then by position.
+    def field_preset_names(self):
+        return sorted(self.field_presets, key=str.lower)
+
+    def save_field_preset(self, name, ordered_configs):
+        """`ordered_configs`: [(field name, config), ...] in the note type's field order."""
+        name = (name or "").strip()
+        if not name or not ordered_configs:
+            return False
+        configs = [(str(f), coerce_field_config(c)) for f, c in ordered_configs]
+        self.field_presets[name] = {
+            "fields": {f: c for f, c in configs},
+            "order": [c for _, c in configs],
+        }
+        return True
+
+    def apply_field_preset(self, name, nt_name, field_names):
+        """Copy the preset onto `nt_name`; returns how many fields were set (0 if unknown)."""
+        body = self.field_presets.get(name)
+        if not body:
+            return 0
+        applied = 0
+        for i, field in enumerate(field_names):
+            cfg = body["fields"].get(field)
+            if cfg is None and i < len(body["order"]):
+                cfg = body["order"][i]
+            if cfg is not None:
+                self.set_field(nt_name, field, cfg)
+                applied += 1
+        return applied
+
+    def delete_field_preset(self, name):
+        return self.field_presets.pop(name, None) is not None
 
     # -------------------------------------------------------------- window
     def set_geometry(self, raw_bytes):

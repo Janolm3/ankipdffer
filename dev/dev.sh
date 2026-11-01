@@ -7,6 +7,7 @@
 #   dev/dev.sh preview    render dialog screenshots + sample PDFs -> dev/out/index.html
 #   dev/dev.sh sandbox    start Anki with a throw-away profile + sample deck + this add-on
 #   dev/dev.sh sandbox-reset   same, but re-create the sample data first
+#   dev/dev.sh sandbox-stop    quit the sandbox Anki (never touches your own Anki)
 #   dev/dev.sh status     show what is installed vs. this tree
 #
 # `sync` never deletes anything in the target and never touches your user data
@@ -16,14 +17,17 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 ANKI_BASE="${ANKI_BASE:-$HOME/Library/Application Support/Anki2}"
 TARGET="${TARGET:-$ANKI_BASE/addons21/anki-pdffer-dev}"
-SANDBOX="${SANDBOX:-$REPO/dev/out/sandbox}"
+SANDBOX="${SANDBOX:-$REPO/dev/.sandbox}"
 ANKI_APP="${ANKI_APP:-/Applications/Anki.app/Contents/MacOS/Anki}"
 
 EXCLUDES=(
-  --exclude ".git" --exclude ".gitignore" --exclude "dev/" --exclude "dist/"
+  --exclude ".git" --exclude ".gitignore" --exclude "dev/" --exclude "dist/" --exclude "docs/"
   --exclude "__pycache__/" --exclude "*.pyc" --exclude ".DS_Store"
   --exclude "settings.json" --exclude "meta.json" --exclude "last_export_log.txt"
 )
+
+# PIDs of Anki processes started on the sandbox base folder (not your regular Anki)
+sandbox_pids() { pgrep -f -- "MacOS/Anki -b $SANDBOX" || true; }
 
 version() { python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['human_version'])" "$1/manifest.json" 2>/dev/null || echo "?"; }
 
@@ -75,7 +79,21 @@ case "${1:-status}" in
     echo "open: $REPO/dev/out/index.html"
     ;;
 
+  sandbox-stop)
+    pids="$(sandbox_pids)"
+    [ -z "$pids" ] && { echo "sandbox Anki is not running"; exit 0; }
+    kill -TERM $pids  # Anki closes the profile cleanly on SIGTERM
+    for _ in $(seq 1 30); do
+      [ -z "$(sandbox_pids)" ] && { echo "sandbox Anki stopped"; exit 0; }
+      sleep 1
+    done
+    echo "sandbox Anki did not quit in 30 s - kill it with: kill -9 $pids"; exit 1
+    ;;
+
   sandbox|sandbox-reset)
+    if [ -n "$(sandbox_pids)" ]; then
+      echo "sandbox Anki is already running (dev/dev.sh sandbox-stop first)"; exit 1
+    fi
     [ "${1}" = "sandbox-reset" ] && rm -rf "$SANDBOX"
     [ -x "$ANKI_APP" ] || { echo "Anki not found at $ANKI_APP (set ANKI_APP)"; exit 1; }
     if [ ! -f "$SANDBOX/prefs21.db" ] || [ ! -f "$SANDBOX/User 1/collection.anki2" ]; then

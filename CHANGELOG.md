@@ -8,7 +8,8 @@ All notable changes to the **AnkiPdffer Dev** add-on will be documented in this 
 - **Question / answer layouts**: keep each card together, print all questions followed by an answer key, or put each card's question on one page and its answer on the next (worksheet / self-test style).
 - **Image Occlusion pages**: export a page with every mask covering the image and a second page with the masks removed and numbered outlines drawn, either one entry per note (all masks at once) or one card per mask. Masks are drawn by the exporter itself, so rectangles, ellipses and polygons render without Anki's JavaScript.
 - **Cloze modes**: reveal answers, hide them as `[...]` (or `[hint]`), show the hidden version followed by the revealed one, or keep Anki's native card-per-cloze rendering.
-- **Per-note-type field settings**: the Fields tab is grouped by note type and every note type remembers its own field configuration (with a *Reset* button for each).
+- **Note type editor**: the Fields tab edits one note type at a time, pre-selected from the card you are reviewing (or the deck's most used type). Any note type in the collection can be picked and edited, and each remembers its own field configuration (with *Reset*). Aligned columns with headers; fields that are not exported are greyed out.
+- **Field presets**: save how a note type's fields look and apply it to any note type (fields are matched by name, then by position).
 - **Presets**: save the current options and field settings under a name, apply or delete them later, and reset everything to the original defaults.
 - **Filter, order and live count**: narrow an export with any Anki search (`tag:leech is:due`), order cards by deck, creation date or shuffle, and see "N cards · M notes" before exporting.
 - **Page numbers** (`3 / 12`) in the PDF footer.
@@ -16,6 +17,9 @@ All notable changes to the **AnkiPdffer Dev** add-on will be documented in this 
 - **Developer tooling** (`dev/`): headless regression checks, dialog screenshots and sample PDFs (`dev/dev.sh preview`), a throw-away Anki sandbox (`dev/dev.sh sandbox`), and `dev/dev.sh sync` to install the working tree into Anki.
 
 ### Changed
+- **Redesigned window** in the classic macOS style: deck pop-ups and a search field in a toolbar, segmented tabs (Content · Appearance · Page · Fields · Settings) on an inset box, right-aligned forms, segmented controls instead of radio buttons, Mac pop-up buttons, a status footer with the card count, and a HUD-style progress panel. Light and dark mode follow Anki. Rounded corners, check boxes and pop-up buttons are drawn antialiased, so edges stay crisp on Retina and standard displays.
+- **Responsive window**: its minimum size follows the content (about 580 × 430), forms never get clipped, field rows switch to two lines in narrow windows, and wide windows keep the table centred.
+- **Keyboard shortcuts**: ⌘1–5 switch tabs, ⌘F focuses the filter, ⌘P previews, ⌘↩ exports, ⌘W closes; Return in the filter refreshes the card count. The last tab is remembered.
 - **Settings are saved automatically** (debounced, atomic write) whenever an option changes and again when the window is hidden or closed, instead of only on some actions. The window size and position are remembered too. Existing `settings.json` files are migrated to the new format on first load.
 - **One window**: *Tools → AnkiPdffer → Open export dialog…* and the quick-export shortcut restore the existing window (also when minimized) instead of opening another one. The window follows profile switches and language changes.
 - Google Fonts are only requested when the Inter stack is selected, so exports with other fonts work offline.

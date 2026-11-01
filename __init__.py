@@ -24,6 +24,7 @@ from .store import (
     coerce_field_config, coerce_settings,
 )
 from .translations import LANGUAGES, STRINGS as _EXTRA_STRINGS
+from . import macui
 
 try:
     from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
@@ -299,40 +300,6 @@ class NoScrollDoubleSpinBox(QDoubleSpinBox):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
 
-class InlineRadioGroup(QWidget):
-    def __init__(self, options, default=0, parent=None):
-        super().__init__(parent)
-        ly = QHBoxLayout()
-        ly.setContentsMargins(0, 0, 0, 0)
-        ly.setSpacing(12)
-        self.group = QButtonGroup(self)
-        self.buttons = []
-        self._current_index = default if 0 <= default < len(options) else 0
-        for i, label in enumerate(options):
-            rb = QRadioButton(label)
-            rb.setCursor(Qt.CursorShape.PointingHandCursor)
-            if i == default:
-                rb.setChecked(True)
-            rb.toggled.connect(lambda checked, idx=i: self._on_toggled(idx, checked))
-            self.group.addButton(rb, i)
-            self.buttons.append(rb)
-            ly.addWidget(rb)
-        ly.addStretch()
-        self.setLayout(ly)
-
-    def _on_toggled(self, idx, checked):
-        if checked:
-            self._current_index = idx
-
-    def currentIndex(self):
-        return self._current_index
-
-    def setCurrentIndex(self, idx):
-        if 0 <= idx < len(self.buttons):
-            self._current_index = idx
-            self.buttons[idx].setChecked(True)
-
-
 class ExportLogger:
     def __init__(self):
         self.entries = []
@@ -390,97 +357,175 @@ class CustomWebEnginePage(QWebEnginePage):
 
 
 class FieldConfigWidget(QWidget):
-    """One row of the Fields tab. `changed` fires on any edit so settings autosave."""
+    """One row of the Fields table. `changed` fires on any edit so settings autosave.
+
+    Wide mode keeps every control on one line, in columns that line up with the table's
+    column header. Compact mode (narrow windows) moves size / style / label to a second line.
+    """
 
     changed = pyqtSignal()
+    MARGINS = (12, 7, 8, 7)
+    SPACING = 8
+    NAME_MIN = 96
 
     def __init__(self, field_name, is_front=False, nt_id=0, nt_name="", config=None, parent=None):
         super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setProperty("last", False)
         self.field_name = field_name
         self.nt_id = nt_id
         self.nt_name = nt_name
-        root = QVBoxLayout()
-        root.setContentsMargins(8, 4, 8, 4)
-        root.setSpacing(0)
+        self._compact = False
+        root = QVBoxLayout(self)
+        root.setContentsMargins(*self.MARGINS)
+        root.setSpacing(6)
 
-        row = QHBoxLayout()
-        row.setSpacing(8)
+        line1 = QHBoxLayout()
+        line1.setSpacing(self.SPACING)
         self.export_cb = QCheckBox()
         self.export_cb.setChecked(True)
-        row.addWidget(self.export_cb)
-        self.name_label = QLabel(field_name)
-        self.name_label.setTextFormat(Qt.TextFormat.PlainText)
-        name_font = self.name_label.font()
-        name_font.setBold(True)
-        self.name_label.setFont(name_font)
-        self.name_label.setMinimumWidth(120)
-        self.name_label.setToolTip(field_name)
-        row.addWidget(self.name_label)
+        self.export_cb.setToolTip(_t("col_export"))
+        line1.addWidget(self.export_cb)
+        self.name_label = macui.ElidedLabel(field_name)
+        self.name_label.setMinimumWidth(self.NAME_MIN)
+        line1.addWidget(self.name_label, 1)
         self.section_combo = NoScrollComboBox()
         self.section_combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.section_combo.addItems([_t("sec_front"), _t("sec_back"), _t("sec_extra")])
         self.section_combo.setCurrentIndex(0 if is_front else 1)
-        self.section_combo.setMinimumWidth(160)
-        row.addWidget(self.section_combo)
-        self.size_radio = InlineRadioGroup(["S", "M", "L", "XL"], default=(2 if is_front else 1))
-        row.addWidget(self.size_radio)
-        self.bold_cb = QCheckBox("B")
+        line1.addWidget(self.section_combo)
+
+        self.size_radio = macui.SegmentedControl(["S", "M", "L", "XL"], default=(2 if is_front else 1))
+        self.size_radio.setToolTip(_t("col_size"))
+        self.format_strip = macui.SegmentedControl(["B", "I", "U"], exclusive=False)
+        self.format_strip.setToolTip(_t("col_style"))
+        self.bold_cb, self.italic_cb, self.underline_cb = self.format_strip.buttons
+        for btn, attr in ((self.bold_cb, "setBold"), (self.italic_cb, "setItalic"),
+                          (self.underline_cb, "setUnderline")):
+            f = btn.font()
+            getattr(f, attr)(True)
+            btn.setFont(f)
         self.bold_cb.setChecked(is_front)
-        f_bold = self.bold_cb.font()
-        f_bold.setBold(True)
-        self.bold_cb.setFont(f_bold)
-        row.addWidget(self.bold_cb)
-        self.label_cb = QCheckBox(_t("field_lbl_label"))
+        # the label check box sits centred in a fixed column under its header
+        self.label_cb = QCheckBox()
         self.label_cb.setChecked(not is_front)
-        row.addWidget(self.label_cb)
-        row.addStretch()
+        self.label_cb.setToolTip(_t("field_lbl_label"))
+        self.label_col = QWidget()
+        lc = QHBoxLayout(self.label_col)
+        lc.setContentsMargins(0, 0, 0, 0)
+        lc.addStretch()
+        lc.addWidget(self.label_cb)
+        lc.addStretch()
+        self.label_col.setFixedWidth(self.label_col_width())
+        self._details = (self.size_radio, self.format_strip, self.label_col)
+        self._slot = QHBoxLayout()
+        self._slot.setSpacing(self.SPACING)
+        for w in self._details:
+            self._slot.addWidget(w)
+        line1.addLayout(self._slot)
+
         self.adv_btn = QPushButton("\u22ef")
-        self.adv_btn.setObjectName("FieldMoreBtn")
-        self.adv_btn.setFixedSize(28, 26)
+        self.adv_btn.setObjectName("Plain")
+        self.adv_btn.setCheckable(True)
+        self.adv_btn.setToolTip(_t("fields_hint"))
+        self.adv_btn.setFixedSize(24, 22)
         self.adv_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.adv_btn.clicked.connect(self._toggle)
-        row.addWidget(self.adv_btn)
-        root.addLayout(row)
+        line1.addWidget(self.adv_btn)
+        root.addLayout(line1)
+
+        self.line2 = QWidget()
+        self._line2 = QHBoxLayout(self.line2)
+        self._line2.setContentsMargins(self.indent(), 0, 0, 0)
+        self._line2.setSpacing(self.SPACING)
+        self._line2.addStretch()
+        self.line2.setVisible(False)
+        root.addWidget(self.line2)
 
         self.adv_panel = QWidget()
         self.adv_panel.setVisible(False)
-        ap = QHBoxLayout()
-        ap.setContentsMargins(32, 4, 0, 6)
-        ap.setSpacing(10)
-        ap.addWidget(QLabel(_t("field_lbl_bg")))
+        ap = QHBoxLayout(self.adv_panel)
+        ap.setContentsMargins(self.indent(), 2, 0, 2)
+        ap.setSpacing(8)
         self.bg_combo = NoScrollComboBox()
-        self.bg_combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.bg_combo.addItems(_t("field_bg"))
-        ap.addWidget(self.bg_combo)
-        ap.addWidget(QLabel(_t("field_lbl_color")))
         self.color_combo = NoScrollComboBox()
-        self.color_combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.color_combo.addItems(_t("field_color"))
-        ap.addWidget(self.color_combo)
-        ap.addWidget(QLabel(_t("field_lbl_align")))
         self.align_combo = NoScrollComboBox()
-        self.align_combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.align_combo.addItems(_t("field_align"))
-        ap.addWidget(self.align_combo)
-        self.italic_cb = QCheckBox("I")
-        f_ital = self.italic_cb.font()
-        f_ital.setItalic(True)
-        self.italic_cb.setFont(f_ital)
-        ap.addWidget(self.italic_cb)
-        self.underline_cb = QCheckBox("U")
-        f_under = self.underline_cb.font()
-        f_under.setUnderline(True)
-        self.underline_cb.setFont(f_under)
-        ap.addWidget(self.underline_cb)
+        for label_key, combo, items_key in (("field_lbl_bg", self.bg_combo, "field_bg"),
+                                            ("field_lbl_color", self.color_combo, "field_color"),
+                                            ("field_lbl_align", self.align_combo, "field_align")):
+            lbl = QLabel(_t(label_key))
+            lbl.setObjectName("Secondary")
+            ap.addWidget(lbl)
+            combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            combo.addItems(_t(items_key))
+            ap.addWidget(combo)
+            ap.addSpacing(6)
         ap.addStretch()
-        self.adv_panel.setLayout(ap)
         root.addWidget(self.adv_panel)
-        self.setLayout(root)
 
         if config:
             self.set_config(config)
+        self._sync_enabled()
         self._wire_changes()
 
+    # ------------------------------------------------------------ geometry
+    def finalize_columns(self):
+        """Fix the column widths. Call once the row sits in the dialog: only then does the
+        stylesheet apply, and the native (unstyled) sizes are far wider."""
+        self.ensurePolished()
+        # the macOS style pads combo boxes / buttons with invisible layout margins; the
+        # column header has none, so lay rows out by the visible widget rects instead
+        for w in self.findChildren(QWidget):
+            w.setAttribute(Qt.WidgetAttribute.WA_LayoutUsesWidgetRect, True)
+        for seg in (self.size_radio, self.format_strip):
+            seg.layout().invalidate()
+            seg.setFixedWidth(seg.sizeHint().width())
+        self.section_combo.setFixedWidth(max(150, self.section_combo.sizeHint().width()))
+        self.adv_btn.setFixedSize(24, 22)  # after polish: the stylesheet's min-width would win otherwise
+        pal = macui.palette(_is_dark_mode())
+        for combo in (self.section_combo, self.bg_combo, self.color_combo, self.align_combo):
+            macui.round_popup(combo, pal)
+
+    @staticmethod
+    def label_col_width():
+        metrics = QFontMetrics(QApplication.font())
+        return max(28, metrics.horizontalAdvance(_t("field_lbl_label").upper()) + 6)
+
+    def indent(self):
+        """Left offset of the field name (and of everything shown below it)."""
+        return self.export_cb.sizeHint().width() + self.SPACING
+
+    def column_widths(self):
+        """Widths of the fixed columns, for the table header."""
+        return dict(lead=self.indent(), section=self.section_combo.maximumWidth(),
+                    size=self.size_radio.maximumWidth(), style=self.format_strip.maximumWidth(),
+                    label=self.label_col_width(), trail=self.adv_btn.maximumWidth())
+
+    def wide_width(self):
+        """Smallest row width that still fits everything on one line."""
+        c = self.column_widths()
+        left, _, right, _ = self.MARGINS
+        return (left + right + c["lead"] + self.NAME_MIN + c["section"] + c["size"] + c["style"]
+                + c["label"] + c["trail"] + 5 * self.SPACING)
+
+    def set_compact(self, compact):
+        if compact == self._compact:
+            return
+        self._compact = compact
+        src, dst = (self._slot, self._line2) if compact else (self._line2, self._slot)
+        for i, w in enumerate(self._details):
+            src.removeWidget(w)
+            dst.insertWidget(i, w)
+        # with no column header above it the check box needs its own caption
+        self.label_cb.setText(_t("field_lbl_label") if compact else "")
+        if compact:
+            self.label_col.setMinimumWidth(0)
+            self.label_col.setMaximumWidth(16777215)
+        else:
+            self.label_col.setFixedWidth(self.label_col_width())
+        self.line2.setVisible(compact)
+
+    # ------------------------------------------------------------- state
     def _wire_changes(self):
         emit = lambda *_: self.changed.emit()
         for cb in (self.export_cb, self.bold_cb, self.label_cb, self.italic_cb, self.underline_cb):
@@ -488,11 +533,17 @@ class FieldConfigWidget(QWidget):
         for combo in (self.section_combo, self.bg_combo, self.color_combo, self.align_combo):
             combo.currentIndexChanged.connect(emit)
         self.size_radio.group.idToggled.connect(emit)
+        self.export_cb.toggled.connect(self._sync_enabled)
+
+    def _sync_enabled(self, *_):
+        """A field that is not exported keeps its settings but greys them out."""
+        on = self.export_cb.isChecked()
+        for w in (self.name_label, self.section_combo, self.size_radio, self.format_strip,
+                  self.label_col, self.adv_btn, self.adv_panel):
+            w.setEnabled(on)
 
     def _toggle(self):
-        v = not self.adv_panel.isVisible()
-        self.adv_panel.setVisible(v)
-        self.adv_btn.setText("\u2715" if v else "\u22ef")
+        self.adv_panel.setVisible(self.adv_btn.isChecked())
 
     def get_config(self):
         return dict(
@@ -520,6 +571,43 @@ class FieldConfigWidget(QWidget):
         self.align_combo.setCurrentIndex(cfg["align"])
         self.italic_cb.setChecked(cfg["italic"])
         self.underline_cb.setChecked(cfg["underline"])
+
+
+class FieldTableHeader(QWidget):
+    """Column captions for one note type's Fields table, aligned with its rows."""
+
+    def __init__(self, row, parent=None):
+        super().__init__(parent)
+        self.setObjectName("TableColumns")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        c = row.column_widths()
+        ly = QHBoxLayout(self)
+        left, _, right, _ = FieldConfigWidget.MARGINS
+        ly.setContentsMargins(left, 6, right, 5)
+        ly.setSpacing(FieldConfigWidget.SPACING)
+        # QBoxLayout adds no spacing next to spacer items, so the spacers carry it themselves
+        ly.addSpacing(c["lead"])
+
+        def caption(key, width=None, align=Qt.AlignmentFlag.AlignLeft):
+            lbl = QLabel(_t(key).upper())
+            lbl.setObjectName("ColumnHeader")
+            lbl.setAlignment(align | Qt.AlignmentFlag.AlignVCenter)
+            if width:
+                lbl.setFixedWidth(width)
+            return lbl
+
+        ly.addWidget(caption("col_field"), 1)
+        ly.addWidget(caption("col_section", c["section"]))
+        center = Qt.AlignmentFlag.AlignHCenter
+        self.details = [caption("col_size", c["size"], center), caption("col_style", c["style"], center),
+                        caption("field_lbl_label", c["label"], center)]
+        for lbl in self.details:
+            ly.addWidget(lbl)
+        ly.addSpacing(c["trail"] + FieldConfigWidget.SPACING)
+
+    def set_compact(self, compact):
+        for lbl in self.details:
+            lbl.setVisible(not compact)
 
 
 PAGE_SIZES = {"A4": (210, 297), "Letter": (216, 279), "A3": (297, 420), "A5": (148, 210)}
@@ -833,755 +921,53 @@ class PDFExportDialog(QDialog):
         self._loading = True  # suppress autosave while the UI is being built / restored
         self._col_ref = mw.col if mw else None
 
-        is_dark = _is_dark_mode()
-        if is_dark:
-            bg_color = "#101010"
-            card_bg = "#18181b"
-            panel_bg = "#202022"
-            border_color = "#27272a"
-            text_color = "#f4f4f5"
-            muted_text = "#a1a1aa"
-            accent_color = "#3b82f6"
-            accent_hover = "#60a5fa"
-            hover_bg = "#27272a"
-            selected_bg = "rgba(59, 130, 246, 0.15)"
-        else:
-            bg_color = "#fcfcfc"
-            card_bg = "#f4f4f5"
-            panel_bg = "#ffffff"
-            border_color = "#e4e4e7"
-            text_color = "#18181b"
-            muted_text = "#71717a"
-            accent_color = "#2563eb"
-            accent_hover = "#3b82f6"
-            hover_bg = "#e4e4e7"
-            selected_bg = "rgba(37, 99, 235, 0.12)"
-
-        dialog_css = """
-            PDFExportDialog, QStackedWidget, QStackedWidget > QWidget {{
-                background-color: {bg_color};
-                color: {text_color};
-            }}
-            QScrollArea {{
-                border: none;
-                background-color: transparent;
-            }}
-            QScrollArea > QWidget {{
-                background-color: transparent;
-            }}
-            QWidget#FieldsContainer {{
-                background-color: transparent;
-            }}
-            FieldConfigWidget {{
-                background-color: {card_bg};
-                border-bottom: 1px solid {border_color};
-                border-radius: 4px;
-                padding: 6px;
-            }}
-            QLabel, QCheckBox, QRadioButton, QGroupBox {{
-                background-color: transparent;
-                color: {text_color};
-            }}
-            QLabel {{
-                font-size: 13px;
-            }}
-            QLabel#HintLabel {{
-                color: {muted_text};
-                font-size: 11px;
-                padding: 0 4px 4px;
-            }}
-            QLabel#VersionLabel {{
-                color: {muted_text};
-                font-size: 11px;
-                font-weight: 600;
-            }}
-            QLabel#SettingsInfoLabel {{
-                color: {muted_text};
-                font-size: 12px;
-            }}
-            QLabel#BusyLabel {{
-                color: {muted_text};
-                font-size: 12px;
-                font-weight: 600;
-            }}
-            QGroupBox {{
-                font-size: 13px;
-                font-weight: 700;
-                color: {text_color};
-                border: none;
-                border-top: 1px solid {border_color};
-                margin-top: 18px;
-                padding-top: 16px;
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                subcontrol-position: top left;
-                left: 0px;
-                padding: 0 8px 0 0;
-                color: {accent_color};
-            }}
-            QComboBox, QSpinBox, QDoubleSpinBox, NoScrollComboBox, QLineEdit, QPlainTextEdit {{
-                background-color: {panel_bg};
-                border: 1px solid {border_color};
-                border-radius: 6px;
-                padding: 6px 10px;
-                color: {text_color};
-                font-size: 13px;
-                min-height: 20px;
-            }}
-            QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover, QLineEdit:hover {{
-                border-color: {accent_color};
-            }}
-            QComboBox::drop-down {{
-                border: none;
-                width: 20px;
-            }}
-            QComboBox::down-arrow {{
-                image: none;
-                border-left: 4px solid transparent;
-                border-right: 4px solid transparent;
-                border-top: 5px solid {muted_text};
-                width: 0;
-                height: 0;
-                margin-right: 8px;
-            }}
-            QComboBox QAbstractItemView {{
-                background-color: {card_bg};
-                border: 1px solid {border_color};
-                selection-background-color: {accent_color};
-                selection-color: #ffffff;
-                color: {text_color};
-                outline: none;
-                border-radius: 6px;
-            }}
-            QCheckBox {{
-                spacing: 8px;
-                font-size: 13px;
-                color: {text_color};
-            }}
-            QCheckBox::indicator {{
-                width: 16px;
-                height: 16px;
-                border: 2px solid {border_color};
-                border-radius: 4px;
-                background: {panel_bg};
-            }}
-            QCheckBox::indicator:hover {{
-                border-color: {accent_color};
-            }}
-            QCheckBox::indicator:checked {{
-                border-color: {accent_color};
-                background-color: {accent_color};
-                background-image: qradialgradient(cx:0.5, cy:0.5, radius:0.25, fx:0.5, fy:0.5, stop:0 #ffffff, stop:0.7 #ffffff, stop:0.8 {accent_color}, stop:1.0 {accent_color});
-            }}
-            QRadioButton {{
-                spacing: 6px;
-                padding: 4px 0;
-                margin: 0;
-                border: none;
-                background: transparent;
-                font-size: 13px;
-                color: {text_color};
-            }}
-            QRadioButton::indicator {{
-                width: 16px;
-                height: 16px;
-                border: 2px solid {border_color};
-                border-radius: 9px;
-                background: {panel_bg};
-            }}
-            QRadioButton::indicator:hover {{
-                border-color: {accent_color};
-            }}
-            QRadioButton::indicator:checked {{
-                border-color: {accent_color};
-                background-color: {panel_bg};
-                background-image: qradialgradient(cx:0.5, cy:0.5, radius:0.35, fx:0.5, fy:0.5, stop:0 {accent_color}, stop:0.7 {accent_color}, stop:0.8 {panel_bg}, stop:1.0 {panel_bg});
-            }}
-            QPushButton#SmallBtn, QPushButton#DangerBtn, QPushButton#FieldMoreBtn {{
-                background-color: {panel_bg};
-                border: 1px solid {border_color};
-                border-radius: 6px;
-                padding: 5px 12px;
-                color: {text_color};
-                font-size: 12px;
-                font-weight: 600;
-            }}
-            QPushButton#FieldMoreBtn {{
-                padding: 0;
-                font-size: 14px;
-            }}
-            QPushButton#DangerBtn {{
-                color: #ef4444;
-            }}
-            QPushButton#SmallBtn:hover, QPushButton#FieldMoreBtn:hover {{
-                border-color: {accent_color};
-            }}
-            QPushButton#DangerBtn:hover {{
-                border-color: #ef4444;
-            }}
-            QPushButton#SmallBtn:disabled {{
-                color: {muted_text};
-            }}
-            QLabel#NtHeader {{
-                color: {accent_color};
-                font-size: 12px;
-                font-weight: 700;
-                padding: 12px 4px 2px;
-            }}
-            QLabel#CountLabel {{
-                color: {muted_text};
-                font-size: 12px;
-            }}
-            QLabel#CountLabel[error="true"] {{
-                color: #ef4444;
-            }}
-            QScrollBar:vertical {{
-                background: transparent;
-                width: 6px;
-                margin: 0px;
-            }}
-            QScrollBar::handle:vertical {{
-                background: {border_color};
-                min-height: 20px;
-                border-radius: 3px;
-            }}
-            QScrollBar::handle:vertical:hover {{
-                background: {accent_color};
-            }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
-                background: none;
-                border: none;
-                height: 0px;
-            }}
-            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
-                background: none;
-            }}
-        """.format(
-            bg_color=bg_color,
-            card_bg=card_bg,
-            panel_bg=panel_bg,
-            border_color=border_color,
-            text_color=text_color,
-            muted_text=muted_text,
-            accent_color=accent_color
-        )
-        self.setStyleSheet(dialog_css)
+        self.setObjectName("PdfferWindow")
+        self._dark = _is_dark_mode()
+        self._pal = macui.palette(self._dark)
+        self.setStyleSheet(macui.stylesheet(self._dark))
 
         self._busy_timer = QTimer(self)
         self._busy_timer.timeout.connect(self._animate_busy)
         self._busy_val = 0
-        self._spinner_idx = 0
-        self._spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
         self._base_busy_message = ""
 
         screen = QApplication.primaryScreen()
         if screen:
             sg = screen.availableGeometry()
-            w = max(980, min(int(sg.width() * 0.78), 1280))
-            h = max(640, min(int(sg.height() * 0.78), 820))
-            self.resize(w, h)
-            self.setMinimumSize(860, 560)
+            self.resize(max(780, min(int(sg.width() * 0.6), 900)),
+                        max(580, min(int(sg.height() * 0.7), 660)))
         else:
-            self.resize(1100, 720)
-            self.setMinimumSize(860, 560)
+            self.resize(820, 660)
         self._active_export_theme_index = None
         self._busy_depth = 0
         self._font_debug_logged_modes = set()
         self._pdf_ready_logged = False
 
-        root = QVBoxLayout()
-        root.setContentsMargins(18, 18, 18, 14)
-        root.setSpacing(10)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        root.addWidget(self._build_toolbar())
 
-        deck_group = QGroupBox(_t("deck_group"))
-        dg = QHBoxLayout()
-        dg.addWidget(QLabel(_t("deck_lbl")))
-        self.deck_combo = QComboBox()
-        self.deck_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        dg.addWidget(self.deck_combo)
-        dg.addSpacing(12)
-        dg.addWidget(QLabel(_t("subdeck_lbl")))
-        self.subdeck_combo = QComboBox()
-        self.subdeck_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        dg.addWidget(self.subdeck_combo)
-        dg_outer = QVBoxLayout()
-        dg_outer.setSpacing(8)
-        dg_outer.addLayout(dg)
-        fr = QHBoxLayout()
-        fr.addWidget(QLabel(_t("lbl_filter")))
-        self.filter_edit = QLineEdit()
-        self.filter_edit.setPlaceholderText(_t("ph_filter"))
-        self.filter_edit.setToolTip(_t("tip_filter"))
-        self.filter_edit.setClearButtonEnabled(True)
-        fr.addWidget(self.filter_edit, 1)
-        self.count_label = QLabel("")
-        self.count_label.setObjectName("CountLabel")
-        self.count_label.setMinimumWidth(190)
-        self.count_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        fr.addWidget(self.count_label)
-        dg_outer.addLayout(fr)
-        deck_group.setLayout(dg_outer)
-        root.addWidget(deck_group)
-        self._count_timer = QTimer(self)
-        self._count_timer.setSingleShot(True)
-        self._count_timer.timeout.connect(self._update_count)
-        self.filter_edit.textChanged.connect(lambda *_: self._count_timer.start(350))
-
-        content_frame = QFrame()
-        content_layout = QHBoxLayout(content_frame)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(12)
-
-        self.sidebar = QListWidget()
-        self.sidebar.setObjectName("Sidebar")
-        self.sidebar.setFixedWidth(176)
-        self.sidebar.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.sidebar.setStyleSheet("""
-            QListWidget#Sidebar {{
-                background: transparent;
-                border: none;
-                border-right: 1px solid {border_color};
-                outline: none;
-                padding-top: 8px;
-            }}
-            QListWidget#Sidebar::item {{
-                padding: 10px 14px;
-                margin: 2px 10px;
-                border-radius: 6px;
-                font-size: 13px;
-                font-weight: 500;
-                color: {muted_text};
-                border-left: 3px solid transparent;
-            }}
-            QListWidget#Sidebar::item:selected {{
-                background: {selected_bg};
-                color: {accent_color};
-                border-left: 3px solid {accent_color};
-                border-radius: 0px 6px 6px 0px;
-                padding-left: 11px;
-            }}
-            QListWidget#Sidebar::item:hover:!selected {{
-                background: {hover_bg};
-                color: {text_color};
-            }}
-        """.format(
-            border_color=border_color,
-            muted_text=muted_text,
-            accent_color=accent_color,
-            hover_bg=hover_bg,
-            selected_bg=selected_bg,
-            text_color=text_color
-        ))
-        content_layout.addWidget(self.sidebar)
-
-        self.stack = QStackedWidget()
-        content_layout.addWidget(self.stack, 1)
-
-        # --- Tab: Basic ---
-        basic = QWidget()
-        bl = QFormLayout(basic)
-        bl.setContentsMargins(28, 22, 28, 22)
-        bl.setHorizontalSpacing(18)
-        bl.setVerticalSpacing(18)
-        bl.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-
-        self.theme_radio = InlineRadioGroup(
-            [_t("theme_light"), _t("theme_dark"), _t("theme_pro")], default=0)
-        bl.addRow(_t("lbl_theme"), self.theme_radio)
-
-        f_row = QHBoxLayout()
-        self.font_combo = NoScrollComboBox()
-        self.font_combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        for name, _ in FONT_OPTIONS:
-            self.font_combo.addItem(name)
-        self.font_combo.setCurrentIndex(0)
-        self.font_combo.setMinimumWidth(150)
-        f_row.addWidget(self.font_combo)
-        f_row.addSpacing(12)
-        f_row.addWidget(QLabel(_t("lbl_size")))
-        self.fontsize_spin = QSpinBox()
-        self.fontsize_spin.setRange(10, 24)
-        self.fontsize_spin.setValue(13)
-        self.fontsize_spin.setSuffix(" px")
-        f_row.addWidget(self.fontsize_spin)
-        f_row.addStretch()
-        bl.addRow(_t("lbl_font"), f_row)
-
-        w_row = QHBoxLayout()
-        self.width_radio = InlineRadioGroup([
-            _t("width_narrow"), _t("width_medium"), _t("width_wide"),
-            _t("width_full"), _t("width_custom"),
-        ], default=1)
-        w_row.addWidget(self.width_radio)
-        self.width_spin = NoScrollSpinBox()
-        self.width_spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.width_spin.setRange(300, 3000)
-        self.width_spin.setValue(800)
-        self.width_spin.setSuffix(" px")
-        self.width_spin.setVisible(False)
-        w_row.addWidget(self.width_spin)
-        self.width_radio.group.idToggled.connect(self._on_width_radio_changed)
-        w_row.addStretch()
-        bl.addRow(_t("lbl_width"), w_row)
-
-        l_row = QHBoxLayout()
-        self.layout_radio = InlineRadioGroup(
-            [_t("layout_standard"), _t("layout_compact")], default=1)
-        l_row.addWidget(self.layout_radio)
-        l_row.addSpacing(44)
-        l_row.addWidget(QLabel(_t("lbl_source")))
-
-        self.render_radio = InlineRadioGroup(
-            [_t("source_fields"), _t("source_cards")], default=0)
-        self.render_radio.group.idToggled.connect(self._on_render_radio_changed)
-        l_row.addWidget(self.render_radio)
-        l_row.addStretch()
-        bl.addRow(_t("lbl_layout"), l_row)
-
-        r_cb1 = QHBoxLayout()
-        r_cb1.setSpacing(16)
-        self.show_title_cb = QCheckBox(_t("cb_title"))
-        self.show_title_cb.setChecked(True)
-        r_cb1.addWidget(self.show_title_cb)
-        self.card_numbers_cb = QCheckBox(_t("cb_numbers"))
-        r_cb1.addWidget(self.card_numbers_cb)
-        r_cb1.addStretch()
-        bl.addRow(QLabel(""), r_cb1)
-
-        r_cb2 = QHBoxLayout()
-        r_cb2.setSpacing(16)
-        self.zebra_cb = QCheckBox(_t("cb_zebra"))
-        r_cb2.addWidget(self.zebra_cb)
-        self.high_contrast_cb = QCheckBox(_t("cb_high_contrast"))
-        r_cb2.addWidget(self.high_contrast_cb)
-        r_cb2.addStretch()
-        bl.addRow(QLabel(""), r_cb2)
-
-        self.qa_combo = NoScrollComboBox()
-        self.qa_combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.qa_combo.addItems([_t("qa_together"), _t("qa_key"), _t("qa_pages")])
-        self.qa_combo.setToolTip(_t("tip_qa"))
-        self.qa_combo.setMinimumWidth(260)
-        qa_row = QHBoxLayout()
-        qa_row.addWidget(self.qa_combo)
-        qa_row.addStretch()
-        qa_lbl = QLabel(_t("lbl_qa"))
-        qa_lbl.setToolTip(_t("tip_qa"))
-        bl.addRow(qa_lbl, qa_row)
-
-        self.cloze_combo = NoScrollComboBox()
-        self.cloze_combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.cloze_combo.addItems([_t("cloze_reveal"), _t("cloze_hide"),
-                                   _t("cloze_both"), _t("cloze_native")])
-        self.cloze_combo.setToolTip(_t("tip_cloze"))
-        self.cloze_combo.setMinimumWidth(260)
-        cz_row = QHBoxLayout()
-        cz_row.addWidget(self.cloze_combo)
-        cz_row.addStretch()
-        cz_lbl = QLabel(_t("lbl_cloze"))
-        cz_lbl.setToolTip(_t("tip_cloze"))
-        bl.addRow(cz_lbl, cz_row)
-
-        self.io_combo = NoScrollComboBox()
-        self.io_combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.io_combo.addItems([_t("io_all"), _t("io_each")])
-        self.io_combo.setToolTip(_t("tip_io"))
-        self.io_combo.setMinimumWidth(260)
-        io_row = QHBoxLayout()
-        io_row.addWidget(self.io_combo)
-        io_row.addStretch()
-        io_lbl = QLabel(_t("lbl_io"))
-        io_lbl.setToolTip(_t("tip_io"))
-        bl.addRow(io_lbl, io_row)
-        self.stack.addWidget(basic)
-        self.sidebar.addItem(_t("tab_basic"))
-
-        # --- Tab: Advanced ---
-        adv = QWidget()
-        avl = QFormLayout(adv)
-        avl.setContentsMargins(28, 22, 28, 22)
-        avl.setHorizontalSpacing(18)
-        avl.setVerticalSpacing(16)
-
-        def _spin(lo, hi, val, sfx):
-            sp = NoScrollSpinBox()
-            sp.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-            sp.setRange(lo, hi)
-            sp.setValue(val)
-            sp.setSuffix(sfx)
-            sp.setMaximumWidth(100)
-            return sp
-
-        self.page_combo = QComboBox()
-        self.page_combo.addItems(["A4", "Letter", "A3", "A5"])
-        self.page_combo.setMaximumWidth(100)
-        avl.addRow(_t("lbl_page"), self.page_combo)
-
-        self.margin_spin = _spin(5, 40, 15, " mm")
-        avl.addRow(_t("lbl_margins"), self.margin_spin)
-
-        self.top_margin_spin = _spin(0, 40, 15, " mm")
-        avl.addRow(_t("lbl_top_margin"), self.top_margin_spin)
-
-        self.padding_spin = _spin(2, 50, 12, " px")
-        avl.addRow(_t("lbl_padding"), self.padding_spin)
-
-        self.gap_spin = _spin(0, 80, 8, " px")
-        avl.addRow(_t("lbl_gap"), self.gap_spin)
-
-        self.lh_spin = NoScrollDoubleSpinBox()
-        self.lh_spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.lh_spin.setRange(1.0, 2.5)
-        self.lh_spin.setValue(1.40)
-        self.lh_spin.setSingleStep(0.05)
-        self.lh_spin.setMaximumWidth(100)
-        avl.addRow(_t("lbl_lineheight"), self.lh_spin)
-
-        self.img_h_spin = _spin(60, 800, 240, " px")
-        avl.addRow(_t("lbl_maximg"), self.img_h_spin)
-
-        ra = QHBoxLayout()
-        self.card_style_combo = QComboBox()
-        self.card_style_combo.addItems([
-            _t("style_rounded"), _t("style_sharp"), _t("style_separator"),
-            _t("style_double"), _t("style_none"),
-        ])
-        ra.addWidget(self.card_style_combo)
-        ra.addSpacing(16)
-        self.strip_html_cb = QCheckBox(_t("cb_strip_html"))
-        ra.addWidget(self.strip_html_cb)
-        ra.addStretch()
-        avl.addRow(_t("lbl_card_style"), ra)
-
-        self.order_combo = QComboBox()
-        self.order_combo.addItems([_t("order_deck"), _t("order_created"), _t("order_shuffle")])
-        self.order_combo.setMaximumWidth(220)
-        avl.addRow(_t("lbl_order"), self.order_combo)
-
-        self.page_numbers_cb = QCheckBox(_t("cb_page_numbers"))
-        avl.addRow(QLabel(""), self.page_numbers_cb)
-        self.stack.addWidget(adv)
-        self.sidebar.addItem(_t("tab_advanced"))
-
-        # --- Tab: Fields ---
-        self.fields_tab = QWidget()
-        fl = QVBoxLayout(self.fields_tab)
-        fl.setContentsMargins(24, 24, 24, 24)
-        fl.setSpacing(20)
-        hint = QLabel(_t("fields_hint"))
-        hint.setObjectName("HintLabel")
-        hint.setWordWrap(True)
-        fl.addWidget(hint)
-        self.fields_scroll = QScrollArea()
-        self.fields_scroll.setWidgetResizable(True)
-        self.fields_container = QWidget()
-        self.fields_container.setObjectName("FieldsContainer")
-        self.fields_layout = QVBoxLayout(self.fields_container)
-        self.fields_layout.setContentsMargins(2, 2, 2, 2)
-        self.fields_layout.setSpacing(1)
-        self.fields_layout.addStretch()
-        self.fields_scroll.setWidget(self.fields_container)
-        fl.addWidget(self.fields_scroll)
-        self.stack.addWidget(self.fields_tab)
-        self.sidebar.addItem(_t("tab_fields"))
-
-        # --- Tab: Settings ---
-        settings_tab = QWidget()
-        stl = QVBoxLayout(settings_tab)
-        stl.setSpacing(16)
-        stl.setContentsMargins(24, 24, 24, 24)
-
-        auto_lbl = QLabel(_t("settings_autosave"))
-        auto_lbl.setObjectName("HintLabel")
-        auto_lbl.setWordWrap(True)
-        stl.addWidget(auto_lbl)
-
-        presets_group = QGroupBox(_t("grp_presets"))
-        pg = QVBoxLayout()
-        pg.setSpacing(10)
-        pr = QHBoxLayout()
-        self.preset_combo = QComboBox()
-        self.preset_combo.setMinimumWidth(220)
-        pr.addWidget(self.preset_combo, 1)
-        self.preset_apply_btn = QPushButton(_t("btn_preset_apply"))
-        self.preset_apply_btn.setObjectName("SmallBtn")
-        self.preset_apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.preset_apply_btn.clicked.connect(self._apply_preset)
-        pr.addWidget(self.preset_apply_btn)
-        self.preset_delete_btn = QPushButton(_t("btn_preset_delete"))
-        self.preset_delete_btn.setObjectName("DangerBtn")
-        self.preset_delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.preset_delete_btn.clicked.connect(self._delete_preset)
-        pr.addWidget(self.preset_delete_btn)
-        pg.addLayout(pr)
-        pr2 = QHBoxLayout()
-        self.preset_save_btn = QPushButton(_t("btn_preset_save"))
-        self.preset_save_btn.setObjectName("SmallBtn")
-        self.preset_save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.preset_save_btn.clicked.connect(self._save_preset)
-        pr2.addWidget(self.preset_save_btn)
-        self.reset_btn = QPushButton(_t("btn_reset_all"))
-        self.reset_btn.setObjectName("DangerBtn")
-        self.reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.reset_btn.clicked.connect(self._reset_settings)
-        pr2.addWidget(self.reset_btn)
-        pr2.addStretch()
-        pg.addLayout(pr2)
-        presets_group.setLayout(pg)
-        stl.addWidget(presets_group)
-
-        self.settings_info = QLabel("")
-        self.settings_info.setObjectName("SettingsInfoLabel")
-        self.settings_info.setWordWrap(True)
-        self.settings_info.setVisible(False)
-        stl.addWidget(self.settings_info)
-
-        lang_ly = QHBoxLayout()
-        lang_ly.addWidget(QLabel(_t("grp_language") + ":"))
-        self.lang_combo = NoScrollComboBox()
-        self.lang_combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        for code, native in LANGUAGES.items():
-            self.lang_combo.addItem(native, code)
-        self.lang_combo.setCurrentIndex(max(0, self.lang_combo.findData(_lang)))
-        self.lang_combo.setMinimumWidth(180)
-        lang_ly.addWidget(self.lang_combo)
-        lang_ly.addStretch()
-        stl.addLayout(lang_ly)
-
-        dbg_ly = QHBoxLayout()
-        self.debug_cb = QCheckBox(_t("cb_debug"))
-        dbg_ly.addWidget(self.debug_cb)
-        self.log_btn = QPushButton(_t("btn_logs"))
-        self.log_btn.setObjectName("SmallBtn")
-        self.log_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.log_btn.setVisible(False)
-        self.log_btn.clicked.connect(self._show_logs)
-        dbg_ly.addWidget(self.log_btn)
-        dbg_ly.addStretch()
-        stl.addLayout(dbg_ly)
-        self.debug_cb.toggled.connect(self.log_btn.setVisible)
-
-        stl.addStretch()
-        self.stack.addWidget(settings_tab)
-        self.sidebar.addItem(_t("tab_settings"))
-
-        self.sidebar.currentRowChanged.connect(self.stack.setCurrentIndex)
-        self.sidebar.setCurrentRow(0)
-
-        root.addWidget(content_frame)
-
-        # --- Bottom buttons ---
-        bottom = QHBoxLayout()
-        bottom.setContentsMargins(12, 4, 12, 0)
-        addon_version = _addon_version()
-        v_lbl = QLabel(f"v {addon_version}")
-        v_lbl.setObjectName("VersionLabel")
-        bottom.addWidget(v_lbl)
-        bottom.addStretch()
-
-        self.busy_wrap = QWidget()
-        busy_ly = QHBoxLayout(self.busy_wrap)
-        busy_ly.setContentsMargins(0, 0, 10, 0)
-        busy_ly.setSpacing(8)
-        self.busy_bar = QProgressBar()
-        self.busy_bar.setObjectName("BusyBar")
-        busy_bar_bg = "#0f172a" if is_dark else "#f1f5f9"
-        busy_bar_border = "1px solid #334155" if is_dark else "1px solid #cbd5e1"
-        busy_bar_chunk = "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #3b82f6, stop:1 #60a5fa)" if is_dark else "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2563eb, stop:1 #3b82f6)"
-        self.busy_bar.setStyleSheet("""
-            QProgressBar#BusyBar {{
-                background: {busy_bar_bg};
-                border: {busy_bar_border};
-                border-radius: 4px;
-            }}
-            QProgressBar#BusyBar::chunk {{
-                background: {busy_bar_chunk};
-                border-radius: 3px;
-            }}
-        """.format(busy_bar_bg=busy_bar_bg, busy_bar_border=busy_bar_border, busy_bar_chunk=busy_bar_chunk))
-        self.busy_bar.setRange(0, 100)
-        self.busy_bar.setValue(0)
-        self.busy_bar.setFixedSize(92, 10)
-        self.busy_bar.setTextVisible(False)
-        busy_ly.addWidget(self.busy_bar)
-        self.busy_label = QLabel("")
-        self.busy_label.setObjectName("BusyLabel")
-        self.busy_label.setMinimumWidth(180)
-        busy_ly.addWidget(self.busy_label)
-        self.busy_wrap.setVisible(False)
-        bottom.addWidget(self.busy_wrap)
-
-        self.grid_cb = QCheckBox(_t("cb_grid"))
-        bottom.addWidget(self.grid_cb)
-        bottom.addSpacing(6)
-
-        _btn_base = (
-            "QPushButton{{"
-            "border:1px solid {brd};background:{bg};color:{fg};"
-            "border-radius:6px;padding:7px 18px;font-size:13px;"
-            "font-weight:600;letter-spacing:0.01em}}"
-            "QPushButton:hover{{background:{hover};border-color:{hover_brd}}}"
-            "QPushButton:pressed{{background:{pressed};border-color:{pressed_brd}}}"
-            "QPushButton:disabled{{opacity:0.5}}"
-        )
-
-        if is_dark:
-            legacy_style = _btn_base.format(
-                brd="#27272a", bg="transparent", fg="#e4e4e7",
-                hover="#202022", hover_brd="#27272a",
-                pressed="#18181b", pressed_brd="#27272a"
-            )
-            preview_style = _btn_base.format(
-                brd="#27272a", bg="transparent", fg="#e4e4e7",
-                hover="#202022", hover_brd="#27272a",
-                pressed="#18181b", pressed_brd="#27272a"
-            )
-            export_style = _btn_base.format(
-                brd="transparent", bg="qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2563eb, stop:1 #3b82f6)", fg="#ffffff",
-                hover="qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #3b82f6, stop:1 #60a5fa)", hover_brd="transparent",
-                pressed="qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #1d4ed8, stop:1 #2563eb)", pressed_brd="transparent"
-            )
-        else:
-            legacy_style = _btn_base.format(
-                brd="#e4e4e7", bg="transparent", fg="#18181b",
-                hover="#f4f4f5", hover_brd="#e4e4e7",
-                pressed="#e4e4e7", pressed_brd="#e4e4e7"
-            )
-            preview_style = _btn_base.format(
-                brd="#e4e4e7", bg="transparent", fg="#18181b",
-                hover="#f4f4f5", hover_brd="#e4e4e7",
-                pressed="#e4e4e7", pressed_brd="#e4e4e7"
-            )
-            export_style = _btn_base.format(
-                brd="transparent", bg="qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2563eb, stop:1 #3b82f6)", fg="#ffffff",
-                hover="qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #3b82f6, stop:1 #60a5fa)", hover_brd="transparent",
-                pressed="qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #1d4ed8, stop:1 #2563eb)", pressed_brd="transparent"
-            )
-
-        self.legacy_btn = QPushButton(_t("btn_legacy"))
-        self.legacy_btn.setMinimumHeight(34)
-        self.legacy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.legacy_btn.setStyleSheet(legacy_style)
-        self.legacy_btn.clicked.connect(self._on_legacy)
-        bottom.addWidget(self.legacy_btn)
-
-        self.preview_btn = QPushButton(_t("btn_preview"))
-        self.preview_btn.setMinimumHeight(34)
-        self.preview_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.preview_btn.setStyleSheet(preview_style)
-        self.preview_btn.clicked.connect(self._on_preview)
-        bottom.addWidget(self.preview_btn)
-
-        self.export_btn = QPushButton(_t("btn_export"))
-        self.export_btn.setMinimumHeight(34)
-        self.export_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.export_btn.setStyleSheet(export_style)
-        self.export_btn.clicked.connect(self._on_export)
-        bottom.addWidget(self.export_btn)
-        root.addLayout(bottom)
-        self.setLayout(root)
+        self.tab_box = macui.TabBox()
+        self.tab_box.add_page(_t("tab_content"), self._scroll_page(self._build_content_tab()))
+        self.tab_box.add_page(_t("tab_appearance"), self._scroll_page(self._build_appearance_tab()))
+        self.tab_box.add_page(_t("tab_page"), self._scroll_page(self._build_page_tab()))
+        self.tab_box.add_page(macui.plain(_t("tab_fields")), self._build_fields_tab())
+        self.tab_box.add_page(macui.plain(_t("tab_settings")), self._scroll_page(self._build_settings_tab()))
+        self.tab_box.finish()
+        self.tabs = self.tab_box.tabs
+        self.stack = self.tab_box.stack
+        body = QVBoxLayout()
+        body.setContentsMargins(20, 14, 20, 18)
+        self.tab_box.setMinimumHeight(300)
+        body.addWidget(self.tab_box, 1)
+        root.addLayout(body, 1)
+        root.addWidget(self._build_footer())
         self._create_busy_overlay()
+        self._install_shortcuts()
+        for combo in self.findChildren(QComboBox):
+            macui.round_popup(combo, self._pal)
+        macui.round_popup(self.field_preset_menu, self._pal)
 
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
@@ -1597,69 +983,463 @@ class PDFExportDialog(QDialog):
             self.restoreGeometry(geo)
         self._loading = False
 
+    # ------------------------------------------------------------- layout
+    @staticmethod
+    def _form_page():
+        """A centred, right-aligned-label form (the classic Mac preferences layout)."""
+        page = QWidget()
+        page.setObjectName("Page")
+        outer = QHBoxLayout(page)
+        outer.setContentsMargins(20, 8, 20, 16)
+        outer.addStretch(1)
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        form.setFormAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
+        form.setHorizontalSpacing(10)
+        form.setVerticalSpacing(10)
+        outer.addLayout(form)
+        outer.addStretch(1)
+        return page, form
+
+    @staticmethod
+    def _scroll_page(widget):
+        area = macui.FitWidthScrollArea()
+        area.setObjectName("PageScroll")
+        area.setWidgetResizable(True)
+        area.setFrameShape(QFrame.Shape.NoFrame)
+        area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        area.setWidget(widget)
+        return area
+
+    @staticmethod
+    def _hrow(*items, spacing=8):
+        ly = QHBoxLayout()
+        ly.setSpacing(spacing)
+        for it in items:
+            if isinstance(it, int):
+                ly.addSpacing(it)
+            elif isinstance(it, QWidget):
+                ly.addWidget(it)
+            else:
+                ly.addLayout(it)
+        return ly
+
+    @staticmethod
+    def _popup(items, min_width=0):
+        combo = NoScrollComboBox()
+        combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        combo.addItems(items)
+        if min_width:
+            combo.setMinimumWidth(min_width)
+        return combo
+
+    @staticmethod
+    def _spin(lo, hi, val, sfx, cls=None):
+        sp = (cls or NoScrollSpinBox)()
+        sp.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        sp.setRange(lo, hi)
+        sp.setValue(val)
+        if sfx:
+            sp.setSuffix(sfx)
+        sp.setFixedWidth(92)
+        sp.setAlignment(Qt.AlignmentFlag.AlignRight)
+        return sp
+
+    @staticmethod
+    def _tip_label(text, tip):
+        lbl = macui.form_label(text)
+        lbl.setToolTip(tip)
+        return lbl
+
+    def _build_toolbar(self):
+        bar = QFrame()
+        bar.setObjectName("Toolbar")
+        ly = QHBoxLayout(bar)
+        ly.setContentsMargins(16, 10, 16, 10)
+        ly.setSpacing(6)
+        deck_lbl = QLabel(_t("deck_lbl"))
+        deck_lbl.setObjectName("ToolbarLabel")
+        ly.addWidget(deck_lbl)
+        self.deck_combo = QComboBox()
+        self.deck_combo.setMinimumWidth(130)
+        self.deck_combo.setMaximumWidth(240)
+        self.deck_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.deck_combo.setToolTip(_t("deck_lbl").rstrip(":"))
+        ly.addWidget(self.deck_combo, 2)
+        chevron = QLabel("\u203a")
+        chevron.setObjectName("Chevron")
+        ly.addWidget(chevron)
+        self.subdeck_combo = QComboBox()
+        self.subdeck_combo.setMinimumWidth(130)
+        self.subdeck_combo.setMaximumWidth(260)
+        self.subdeck_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.subdeck_combo.setToolTip(_t("subdeck_lbl").rstrip(":"))
+        ly.addWidget(self.subdeck_combo, 2)
+        ly.addSpacing(14)
+        ly.addStretch(1)
+        self.filter_edit = QLineEdit()
+        self.filter_edit.setObjectName("SearchField")
+        self.filter_edit.setPlaceholderText(_t("ph_search"))
+        self.filter_edit.setToolTip("{}\n{}".format(_t("ph_filter"), _t("tip_filter")))
+        self.filter_edit.setClearButtonEnabled(True)
+        self.filter_edit.addAction(macui.glyph_icon("search", self._pal),
+                                   QLineEdit.ActionPosition.LeadingPosition)
+        self.filter_edit.setMinimumWidth(190)
+        self.filter_edit.setMaximumWidth(330)
+        self.filter_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        ly.addWidget(self.filter_edit, 3)
+
+        self._count_timer = QTimer(self)
+        self._count_timer.setSingleShot(True)
+        self._count_timer.timeout.connect(self._update_count)
+        self.filter_edit.textChanged.connect(lambda *_: self._count_timer.start(350))
+        return bar
+
+    def _build_content_tab(self):
+        page, form = self._form_page()
+        self.render_radio = macui.SegmentedControl(
+            [_t("source_fields"), _t("source_cards")], default=0)
+        self.render_radio.group.idToggled.connect(self._on_render_radio_changed)
+        form.addRow(_t("lbl_source"), self.render_radio)
+
+        self.qa_combo = self._popup([_t("qa_together"), _t("qa_key"), _t("qa_pages")], 250)
+        self.qa_combo.setToolTip(_t("tip_qa"))
+        form.addRow(self._tip_label(_t("lbl_qa"), _t("tip_qa")), self.qa_combo)
+        self.cloze_combo = self._popup([_t("cloze_reveal"), _t("cloze_hide"),
+                                        _t("cloze_both"), _t("cloze_native")], 250)
+        self.cloze_combo.setToolTip(_t("tip_cloze"))
+        form.addRow(self._tip_label(_t("lbl_cloze"), _t("tip_cloze")), self.cloze_combo)
+        self.io_combo = self._popup([_t("io_all"), _t("io_each")], 250)
+        self.io_combo.setToolTip(_t("tip_io"))
+        form.addRow(self._tip_label(_t("lbl_io"), _t("tip_io")), self.io_combo)
+        self.order_combo = self._popup([_t("order_deck"), _t("order_created"), _t("order_shuffle")], 250)
+        form.addRow(_t("lbl_order"), self.order_combo)
+        column = (self.qa_combo, self.cloze_combo, self.io_combo, self.order_combo)
+        width = max(c.sizeHint().width() for c in column)
+        for c in column:  # one aligned column of pop-ups, wide enough for the longest translation
+            c.setFixedWidth(width)
+
+        form.addRow(macui.separator())
+        self.show_title_cb = QCheckBox(_t("cb_title"))
+        self.show_title_cb.setChecked(True)
+        self.card_numbers_cb = QCheckBox(_t("cb_numbers"))
+        form.addRow(_t("lbl_show"), self._hrow(self.show_title_cb, 10, self.card_numbers_cb))
+        return page
+
+    def _build_appearance_tab(self):
+        page, form = self._form_page()
+        self.theme_radio = macui.SegmentedControl(
+            [_t("theme_light"), _t("theme_dark"), _t("theme_pro")], default=0)
+        form.addRow(_t("lbl_theme"), self.theme_radio)
+
+        self.font_combo = self._popup([name for name, _ in FONT_OPTIONS], 160)
+        self.fontsize_spin = self._spin(10, 24, 13, " px", QSpinBox)
+        size_lbl = QLabel(_t("lbl_size"))
+        size_lbl.setObjectName("Secondary")
+        form.addRow(_t("lbl_font"), self._hrow(self.font_combo, 6, size_lbl, self.fontsize_spin))
+
+        self.width_radio = macui.SegmentedControl([
+            _t("width_narrow"), _t("width_medium"), _t("width_wide"),
+            _t("width_full"), _t("width_custom"),
+        ], default=1)
+        for btn in self.width_radio.buttons:
+            full = btn.text()
+            short = re.sub(r"\s*\(\s*\d+\s*px\s*\)", "", full)
+            if short != full:
+                btn.setText(short)
+                btn.setToolTip(full)
+        self.width_spin = self._spin(300, 3000, 800, " px")
+        self.width_spin.setVisible(False)
+        self.width_radio.group.idToggled.connect(self._on_width_radio_changed)
+        form.addRow(_t("lbl_width"), self._hrow(self.width_radio, self.width_spin))
+
+        self.layout_radio = macui.SegmentedControl(
+            [_t("layout_standard"), _t("layout_compact")], default=1)
+        form.addRow(_t("lbl_layout"), self.layout_radio)
+        self.card_style_combo = self._popup([
+            _t("style_rounded"), _t("style_sharp"), _t("style_separator"),
+            _t("style_double"), _t("style_none"),
+        ], 160)
+        form.addRow(_t("lbl_card_style"), self.card_style_combo)
+
+        form.addRow(macui.separator())
+        self.zebra_cb = QCheckBox(_t("cb_zebra"))
+        self.high_contrast_cb = QCheckBox(_t("cb_high_contrast"))
+        self.strip_html_cb = QCheckBox(_t("cb_strip_html"))
+        self.grid_cb = QCheckBox(_t("cb_grid_html"))
+        form.addRow(_t("lbl_extras"), self.zebra_cb)
+        for cb in (self.high_contrast_cb, self.strip_html_cb, self.grid_cb):
+            form.addRow("", cb)
+        return page
+
+    def _build_page_tab(self):
+        page, form = self._form_page()
+        self.page_combo = self._popup(["A4", "Letter", "A3", "A5"], 92)
+        form.addRow(_t("lbl_page"), self.page_combo)
+        self.margin_spin = self._spin(5, 40, 15, " mm")
+        form.addRow(_t("lbl_margins"), self.margin_spin)
+        self.top_margin_spin = self._spin(0, 40, 15, " mm")
+        form.addRow(_t("lbl_top_margin"), self.top_margin_spin)
+        form.addRow(macui.separator())
+        self.padding_spin = self._spin(2, 50, 12, " px")
+        form.addRow(_t("lbl_padding"), self.padding_spin)
+        self.gap_spin = self._spin(0, 80, 8, " px")
+        form.addRow(_t("lbl_gap"), self.gap_spin)
+        self.lh_spin = self._spin(1, 3, 1, "", NoScrollDoubleSpinBox)
+        self.lh_spin.setRange(1.0, 2.5)
+        self.lh_spin.setSingleStep(0.05)
+        self.lh_spin.setValue(1.40)
+        form.addRow(_t("lbl_lineheight"), self.lh_spin)
+        self.img_h_spin = self._spin(60, 800, 240, " px")
+        form.addRow(_t("lbl_maximg"), self.img_h_spin)
+        form.addRow(macui.separator())
+        self.page_numbers_cb = QCheckBox(_t("cb_page_numbers"))
+        form.addRow("", self.page_numbers_cb)
+        return page
+
+    FIELDS_MAX_WIDTH = 900
+
+    def _build_fields_tab(self):
+        self.fields_tab = QWidget()
+        self.fields_tab.setObjectName("Page")
+        fl = QVBoxLayout(self.fields_tab)
+        fl.setContentsMargins(14, 2, 6, 6)
+        fl.setSpacing(8)
+        hint = QLabel(_t("fields_hint"))
+        hint.setObjectName("HintLabel")
+        hint.setWordWrap(True)
+        hint.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        fl.addWidget(hint)
+        self.fields_scroll = QScrollArea()
+        self.fields_scroll.setObjectName("PageScroll")
+        self.fields_scroll.setWidgetResizable(True)
+        self.fields_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.fields_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.fields_container = QWidget()
+        self.fields_container.setObjectName("Page")
+        centre = QHBoxLayout(self.fields_container)
+        centre.setContentsMargins(0, 0, 8, 8)
+        centre.addStretch(1)
+        column = QWidget()
+        column.setObjectName("Page")
+        column.setMaximumWidth(self.FIELDS_MAX_WIDTH)
+        column.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.fields_layout = QVBoxLayout(column)
+        self.fields_layout.setContentsMargins(0, 0, 0, 0)
+        self.fields_layout.setSpacing(6)
+        self.fields_layout.addWidget(self._build_notetype_bar())
+        self.fields_info = QLabel("")
+        self.fields_info.setObjectName("SettingsInfoLabel")
+        self.fields_info.setVisible(False)
+        self.fields_layout.addWidget(self.fields_info)
+        self._fields_info_timer = QTimer(self)
+        self._fields_info_timer.setSingleShot(True)
+        self._fields_info_timer.timeout.connect(lambda: self.fields_info.setVisible(False))
+        self.fields_empty = QLabel(_t("deck_count_none"))
+        self.fields_empty.setObjectName("Secondary")
+        self.fields_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.fields_empty.setContentsMargins(0, 40, 0, 0)
+        self.fields_layout.addWidget(self.fields_empty)
+        self.fields_layout.addStretch()
+        centre.addWidget(column, 100)
+        centre.addStretch(1)
+        self.fields_scroll.setWidget(self.fields_container)
+        self.fields_scroll.viewport().installEventFilter(self)
+        fl.addWidget(self.fields_scroll)
+        self._fields_compact = None
+        return self.fields_tab
+
+    def _build_notetype_bar(self):
+        """Note type to edit (pre-selected from the current card / deck) + field presets."""
+        bar = QWidget()
+        bar.setObjectName("Page")
+        ly = QHBoxLayout(bar)
+        ly.setContentsMargins(2, 0, 0, 2)
+        ly.setSpacing(8)
+        lbl = QLabel(_t("lbl_note_type"))
+        ly.addWidget(lbl)
+        self.nt_combo = NoScrollComboBox()
+        self.nt_combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.nt_combo.setMinimumWidth(180)
+        self.nt_combo.setMaximumWidth(320)
+        self.nt_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.nt_combo.activated.connect(self._on_notetype_picked)
+        ly.addWidget(self.nt_combo, 2)
+        self.nt_source = macui.ElidedLabel("")
+        self.nt_source.setObjectName("Secondary")
+        self.nt_source.setMinimumWidth(0)
+        ly.addWidget(self.nt_source, 1)
+        self.field_preset_btn = QPushButton(_t("grp_presets"))
+        self.field_preset_btn.setToolTip(_t("tip_field_preset"))
+        self.field_preset_menu = QMenu(self.field_preset_btn)
+        self.field_preset_menu.aboutToShow.connect(self._fill_field_preset_menu)
+        self.field_preset_btn.setMenu(self.field_preset_menu)
+        self.field_preset_btn.setProperty("menuButton", True)
+        ly.addWidget(self.field_preset_btn)
+        self.nt_reset_btn = QPushButton(_t("nt_reset"))
+        self.nt_reset_btn.clicked.connect(lambda: self._nt_shown and self._reset_note_type(self._nt_shown["name"]))
+        ly.addWidget(self.nt_reset_btn)
+        self._nt_selected = None      # id of the note type being edited
+        self._nt_pinned = None        # why the type sticks across deck changes: "card", "user" or None
+        self._nt_shown = None         # its note type dict
+        self._detect_pending = True   # pick the current card's type the next time the list loads
+        self._deck_nt_counts = {}
+        return bar
+
+    def eventFilter(self, obj, event):
+        if (event.type() == QEvent.Type.Resize and hasattr(self, "fields_scroll")
+                and obj is self.fields_scroll.viewport()):
+            self._reflow_fields()
+        return super().eventFilter(obj, event)
+
+    def _reflow_fields(self, force=False):
+        """Switch the field rows between one-line and two-line layout to fit the window."""
+        if not self.field_widgets:
+            return
+        avail = min(self.fields_scroll.viewport().width() - 8, self.FIELDS_MAX_WIDTH) - 2
+        need = max(w.wide_width() for w in self.field_widgets)
+        compact = avail < need
+        if compact == self._fields_compact and not force:
+            return
+        self._fields_compact = compact
+        for w in self.field_widgets + self._nt_headers:
+            if hasattr(w, "set_compact"):
+                w.set_compact(compact)
+
+    def _build_settings_tab(self):
+        page, form = self._form_page()
+        self.preset_combo = self._popup([], 200)
+        self.preset_apply_btn = QPushButton(_t("btn_preset_apply"))
+        self.preset_apply_btn.clicked.connect(self._apply_preset)
+        self.preset_delete_btn = QPushButton(_t("btn_preset_delete"))
+        self.preset_delete_btn.clicked.connect(self._delete_preset)
+        form.addRow(_t("grp_presets") + ":",
+                    self._hrow(self.preset_combo, self.preset_apply_btn, self.preset_delete_btn))
+        self.preset_save_btn = QPushButton(_t("btn_preset_save"))
+        self.preset_save_btn.clicked.connect(self._save_preset)
+        form.addRow("", self._hrow(self.preset_save_btn))
+
+        form.addRow(macui.separator())
+        self.lang_combo = NoScrollComboBox()
+        self.lang_combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        for code, native in LANGUAGES.items():
+            self.lang_combo.addItem(native, code)
+        self.lang_combo.setCurrentIndex(max(0, self.lang_combo.findData(_lang)))
+        self.lang_combo.setMinimumWidth(200)
+        form.addRow(_t("grp_language") + ":", self.lang_combo)
+        self.debug_cb = QCheckBox(_t("cb_debug"))
+        self.log_btn = QPushButton(_t("btn_logs"))
+        self.log_btn.setVisible(False)
+        self.log_btn.clicked.connect(self._show_logs)
+        self.debug_cb.toggled.connect(self.log_btn.setVisible)
+        form.addRow(_t("grp_debug") + ":", self._hrow(self.debug_cb, 6, self.log_btn))
+
+        form.addRow(macui.separator())
+        self.reset_btn = QPushButton(_t("btn_reset_all"))
+        self.reset_btn.setObjectName("Destructive")
+        self.reset_btn.clicked.connect(self._reset_settings)
+        form.addRow("", self._hrow(self.reset_btn))
+        self.settings_info = QLabel("")
+        self.settings_info.setObjectName("SettingsInfoLabel")
+        self.settings_info.setWordWrap(True)
+        self.settings_info.setVisible(False)
+        form.addRow("", self.settings_info)
+
+        auto_lbl = QLabel(_t("settings_autosave"))
+        auto_lbl.setObjectName("HintLabel")
+        auto_lbl.setWordWrap(True)
+        auto_lbl.setMinimumWidth(320)
+        auto_lbl.setMaximumWidth(380)
+        form.addRow("", auto_lbl)
+        v_lbl = QLabel("AnkiPdffer {}".format(_addon_version()))
+        v_lbl.setObjectName("VersionLabel")
+        form.addRow("", v_lbl)
+        return page
+
+    def _build_footer(self):
+        bar = QFrame()
+        bar.setObjectName("Footer")
+        ly = QHBoxLayout(bar)
+        ly.setContentsMargins(20, 10, 20, 12)
+        ly.setSpacing(8)
+        self.count_label = QLabel("")
+        self.count_label.setObjectName("CountLabel")
+        ly.addWidget(self.count_label)
+
+        self.busy_wrap = QWidget()
+        busy_ly = QHBoxLayout(self.busy_wrap)
+        busy_ly.setContentsMargins(10, 0, 0, 0)
+        busy_ly.setSpacing(8)
+        self.busy_bar = QProgressBar()
+        self.busy_bar.setRange(0, 100)
+        self.busy_bar.setValue(0)
+        self.busy_bar.setFixedWidth(80)
+        self.busy_bar.setTextVisible(False)
+        busy_ly.addWidget(self.busy_bar)
+        self.busy_label = QLabel("")
+        self.busy_label.setObjectName("BusyLabel")
+        busy_ly.addWidget(self.busy_label)
+        self.busy_wrap.setVisible(False)
+        ly.addWidget(self.busy_wrap)
+        ly.addStretch()
+
+        self.legacy_btn = QPushButton(_t("btn_legacy"))
+        self.legacy_btn.clicked.connect(self._on_legacy)
+        self.preview_btn = QPushButton(_t("btn_preview"))
+        self.preview_btn.clicked.connect(self._on_preview)
+        self.export_btn = QPushButton(_t("btn_export"))
+        self.export_btn.setObjectName("Primary")
+        self.export_btn.clicked.connect(self._on_export)
+        for btn in (self.legacy_btn, self.preview_btn, self.export_btn):
+            btn.setAutoDefault(False)
+            btn.setMinimumWidth(96)
+            ly.addWidget(btn)
+        return bar
+
+    def _install_shortcuts(self):
+        """Mac conventions: ⌘1–5 tabs, ⌘F filter, ⌘P preview, ⌘↩ export, ⌘W close."""
+        def bind(seq, slot):
+            sc = QShortcut(QKeySequence(seq), self)
+            sc.setContext(Qt.ShortcutContext.WindowShortcut)
+            sc.activated.connect(slot)
+            return sc
+
+        for i in range(self.stack.count()):
+            bind("Ctrl+{}".format(i + 1), lambda i=i: self._go_to_tab(i))
+        bind(QKeySequence.StandardKey.Find, lambda: (self.filter_edit.setFocus(), self.filter_edit.selectAll()))
+        bind(QKeySequence.StandardKey.Close, self.close)
+        bind("Ctrl+P", lambda: self.preview_btn.isEnabled() and self.preview_btn.click())
+        for seq in ("Ctrl+Return", "Ctrl+Enter"):
+            bind(seq, lambda: self.export_btn.isEnabled() and self.export_btn.click())
+        native = QKeySequence.SequenceFormat.NativeText
+        for btn, seq in ((self.preview_btn, "Ctrl+P"), (self.export_btn, "Ctrl+Return")):
+            btn.setToolTip("{}  {}".format(btn.text(), QKeySequence(seq).toString(native)))
+        self.filter_edit.returnPressed.connect(self._refresh_count_now)
+
+    def _go_to_tab(self, idx):
+        if self.tabs.buttons[idx].isVisibleTo(self.tabs):
+            self.tabs.setCurrentIndex(idx)
+
+    def _refresh_count_now(self):
+        self._count_timer.stop()
+        self._update_count()
+
     def _create_busy_overlay(self):
-        is_dark = _is_dark_mode()
+        """HUD-style progress panel shown over the window while exporting."""
         self.busy_overlay = QFrame(self)
         self.busy_overlay.setObjectName("BusyOverlay")
         self.busy_overlay.setCursor(Qt.CursorShape.WaitCursor)
-        overlay_bg = "rgba(16, 16, 16, 210)" if is_dark else "rgba(255, 255, 255, 210)"
-        panel_bg_overlay = "#18181b" if is_dark else "#ffffff"
-        border_overlay = "rgba(59, 130, 246, 0.4)" if is_dark else "rgba(37, 99, 235, 0.3)"
-        label_overlay = "#f4f4f5" if is_dark else "#18181b"
-        hint_overlay = "#a1a1aa" if is_dark else "#71717a"
-        bar_bg = "#101010" if is_dark else "#f4f4f5"
-        bar_border = "1px solid #27272a" if is_dark else "1px solid #e4e4e7"
-        bar_chunk = "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2563eb, stop:1 #3b82f6)" if is_dark else "qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2563eb, stop:1 #3b82f6)"
-        self.busy_overlay.setStyleSheet("""
-            QFrame#BusyOverlay {{
-                background: {overlay_bg};
-                border: none;
-            }}
-            QFrame#BusyPanel {{
-                background: {panel_bg_overlay};
-                border: 1px solid {border_overlay};
-                border-radius: 12px;
-                min-width: 300px;
-            }}
-            QLabel#BusyOverlayLabel {{
-                color: {label_overlay};
-                font-size: 15px;
-                font-weight: 600;
-                font-family: system-ui, -apple-system, sans-serif;
-            }}
-            QLabel#BusyOverlayHint {{
-                color: {hint_overlay};
-                font-size: 11px;
-                font-weight: 500;
-                font-family: system-ui, -apple-system, sans-serif;
-            }}
-            QProgressBar#BusyOverlayBar {{
-                background: {bar_bg};
-                border: {bar_border};
-                border-radius: 5px;
-            }}
-            QProgressBar#BusyOverlayBar::chunk {{
-                background: {bar_chunk};
-                border-radius: 4px;
-            }}
-        """.format(
-            overlay_bg=overlay_bg,
-            panel_bg_overlay=panel_bg_overlay,
-            border_overlay=border_overlay,
-            label_overlay=label_overlay,
-            hint_overlay=hint_overlay,
-            bar_bg=bar_bg,
-            bar_border=bar_border,
-            bar_chunk=bar_chunk
-        ))
         overlay_ly = QVBoxLayout(self.busy_overlay)
         overlay_ly.setContentsMargins(0, 0, 0, 0)
         overlay_ly.addStretch()
 
-        self.busy_panel = QFrame(self.busy_overlay)
+        self.busy_panel = macui.RoundedFrame("hud", None, 14, self.busy_overlay)
         self.busy_panel.setObjectName("BusyPanel")
+        self.busy_panel.setMinimumWidth(280)
         panel_ly = QVBoxLayout(self.busy_panel)
-        panel_ly.setContentsMargins(28, 24, 28, 24)
+        panel_ly.setContentsMargins(26, 22, 26, 20)
         panel_ly.setSpacing(12)
 
         self.busy_overlay_label = QLabel("")
@@ -1668,10 +1448,9 @@ class PDFExportDialog(QDialog):
         panel_ly.addWidget(self.busy_overlay_label)
 
         self.busy_overlay_bar = QProgressBar()
-        self.busy_overlay_bar.setObjectName("BusyOverlayBar")
         self.busy_overlay_bar.setRange(0, 100)
         self.busy_overlay_bar.setValue(0)
-        self.busy_overlay_bar.setFixedSize(260, 10)
+        self.busy_overlay_bar.setFixedWidth(220)
         self.busy_overlay_bar.setTextVisible(False)
         panel_ly.addWidget(self.busy_overlay_bar, 0, Qt.AlignmentFlag.AlignCenter)
 
@@ -1707,15 +1486,12 @@ class PDFExportDialog(QDialog):
         return val
 
     def _on_render_radio_changed(self, idx, checked):
-        if not checked:
+        if not checked or not hasattr(self, "tab_box"):
             return
         tab_idx = self.stack.indexOf(self.fields_tab)
-        item = self.sidebar.item(tab_idx)
-        if item:
-            item.setHidden(idx != 0)
+        self.tab_box.setSegmentVisible(tab_idx, idx == 0)
         if idx != 0 and self.stack.currentIndex() == tab_idx:
-            self.stack.setCurrentIndex(0)
-            self.sidebar.setCurrentRow(0)
+            self.tabs.setCurrentIndex(0)
 
     # ------------------------------------------------------------------ decks
     def select_deck(self, name):
@@ -1728,7 +1504,9 @@ class PDFExportDialog(QDialog):
             self._loading = was_loading
 
     def refresh_collection(self):
-        """Re-read the deck list when the window is shown again; keeps the selection."""
+        """Re-read the deck list when the window is shown again; keeps the selection and
+        re-detects the note type of the card being studied."""
+        self._detect_pending = True
         self.select_deck(self._sel())
 
     def _populate_decks(self, preferred=None):
@@ -1866,67 +1644,211 @@ class PDFExportDialog(QDialog):
             w.deleteLater()
         self.field_widgets.clear()
         self._nt_headers.clear()
+        self._fields_compact = None
 
     def _load_fields(self):
-        """Rebuild the Fields tab: one group per note type used by the selected deck.
+        """Refresh the note-type list for the selected deck and show the chosen type's fields.
 
-        Each field starts from the config remembered for its note type, so switching decks
-        (or reopening the window) never loses per-note-type settings.
+        Field settings are remembered per note type, so switching decks (or reopening the
+        window) never loses them. Every note type of the collection can be edited; the deck's
+        own types are listed first.
         """
-        self._clear_field_widgets()
-        dn = self._sel()
-        if not dn:
-            return
         counts = {}
+        dn = self._sel()
+        if dn:
+            try:
+                nids = mw.col.find_notes(_deck_query(dn))
+                chunk = 500
+                for i in range(0, len(nids), chunk):
+                    ids = ",".join(str(n) for n in nids[i:i + chunk])
+                    for mid, cnt in mw.col.db.all(
+                            "SELECT mid, count() FROM notes WHERE id IN ({}) GROUP BY mid".format(ids)):
+                        counts[mid] = counts.get(mid, 0) + cnt
+            except Exception as e:
+                logger.error("Field scan failed for deck {}".format(dn), e)
+        self._deck_nt_counts = counts
+        deck_ids = [mid for mid, _ in sorted(counts.items(), key=lambda kv: -kv[1])]
         try:
-            nids = mw.col.find_notes(_deck_query(dn))
-            chunk = 500
-            for i in range(0, len(nids), chunk):
-                ids = ",".join(str(n) for n in nids[i:i + chunk])
-                for mid, cnt in mw.col.db.all(
-                        "SELECT mid, count() FROM notes WHERE id IN ({}) GROUP BY mid".format(ids)):
-                    counts[mid] = counts.get(mid, 0) + cnt
-        except Exception as e:
-            logger.error("Field scan failed for deck {}".format(dn), e)
-            return
-        for mid, cnt in sorted(counts.items(), key=lambda kv: -kv[1]):
-            nt = mw.col.models.get(mid)
-            if not nt:
-                continue
-            self._add_note_type_group(nt, cnt)
+            others = sorted((x for x in mw.col.models.all_names_and_ids() if x.id not in counts),
+                            key=lambda x: x.name.lower())
+        except Exception:
+            others = []
 
-    def _add_note_type_group(self, nt, note_count):
-        header = QWidget()
-        hl = QHBoxLayout(header)
-        hl.setContentsMargins(0, 0, 0, 0)
-        title = QLabel(_t("nt_header").format(name=nt["name"], n=note_count))
-        title.setObjectName("NtHeader")
-        title.setTextFormat(Qt.TextFormat.PlainText)
-        hl.addWidget(title)
-        hl.addStretch()
-        if not _notetype_is_io(nt):
-            reset = QPushButton(_t("nt_reset"))
-            reset.setObjectName("SmallBtn")
-            reset.setCursor(Qt.CursorShape.PointingHandCursor)
-            reset.clicked.connect(lambda _=False, n=nt["name"]: self._reset_note_type(n))
-            hl.addWidget(reset)
-        self.fields_layout.insertWidget(self.fields_layout.count() - 1, header)
-        self._nt_headers.append(header)
+        self.nt_combo.blockSignals(True)
+        self.nt_combo.clear()
+        for mid in deck_ids:
+            nt = mw.col.models.get(mid)
+            if nt:
+                self.nt_combo.addItem(_t("nt_header").format(name=nt["name"], n=counts[mid]), mid)
+        if self.nt_combo.count() and others:
+            self.nt_combo.insertSeparator(self.nt_combo.count())
+        for x in others:
+            self.nt_combo.addItem(x.name, x.id)
+        target, source = self._choose_notetype(deck_ids, [x.id for x in others])
+        idx = self.nt_combo.findData(target) if target is not None else -1
+        self.nt_combo.setCurrentIndex(idx)
+        self.nt_combo.blockSignals(False)
+        self._show_notetype(target, source)
+
+    @staticmethod
+    def _current_card_notetype_id():
+        """Note type of the card being reviewed right now, if any."""
+        try:
+            if getattr(mw, "state", None) != "review":
+                return None
+            card = getattr(mw.reviewer, "card", None)
+            if card is None:
+                return None
+            nt = card.note_type() if hasattr(card, "note_type") else card.model()
+            return nt["id"]
+        except Exception:
+            return None
+
+    def _choose_notetype(self, deck_ids, other_ids):
+        if self._detect_pending:
+            self._detect_pending = False
+            card_nt = self._current_card_notetype_id()
+            if card_nt is not None and (card_nt in deck_ids or card_nt in other_ids):
+                self._nt_pinned = "card"
+                return card_nt, "card"
+        if self._nt_pinned and self._nt_selected in deck_ids:
+            return self._nt_selected, ("card" if self._nt_pinned == "card" else None)
+        self._nt_pinned = None
+        if deck_ids:
+            return deck_ids[0], "deck"
+        if other_ids:
+            return other_ids[0], None
+        return None, None
+
+    def _on_notetype_picked(self, idx):
+        mid = self.nt_combo.itemData(idx)
+        if mid is not None:
+            self._nt_pinned = "user"
+            self._show_notetype(mid, None)
+
+    def _show_notetype(self, mid, source):
+        """Build the field table for one note type."""
+        self._clear_field_widgets()
+        self._nt_selected = mid
+        nt = mw.col.models.get(mid) if mid is not None else None
+        self._nt_shown = nt
+        if source == "card":
+            hint = _t("nt_detect_card")
+        elif source == "deck":
+            hint = _t("nt_detect_deck")
+        elif nt is not None and mid not in self._deck_nt_counts:
+            hint = _t("nt_not_in_deck")
+        else:
+            hint = ""
+        self.nt_source.setText(hint)
+        self.nt_source.setToolTip(hint)
+        is_io = bool(nt) and _notetype_is_io(nt)
+        self.nt_reset_btn.setEnabled(bool(nt) and not is_io)
+        self.field_preset_btn.setEnabled(bool(nt) and not is_io)
+        self.fields_empty.setVisible(nt is None)
+        if nt is not None:
+            self._add_note_type_group(nt)
+            self._reflow_fields(force=True)
+
+    def _add_note_type_group(self, nt):
+        table = macui.RoundedFrame("table", "box_border", 8)
+        table.setObjectName("Table")
+        tl = QVBoxLayout(table)
+        tl.setContentsMargins(0, 0, 0, 0)
+        tl.setSpacing(0)
+        self.fields_layout.insertWidget(self.fields_layout.count() - 1, table)
+        self._nt_headers.append(table)
         if _notetype_is_io(nt):
             note = QLabel(_t("nt_io_auto"))
             note.setObjectName("HintLabel")
             note.setWordWrap(True)
-            self.fields_layout.insertWidget(self.fields_layout.count() - 1, note)
-            self._nt_headers.append(note)
+            note.setContentsMargins(12, 10, 12, 10)
+            tl.addWidget(note)
             return
         saved = _store.get_fields(nt["name"])
+        columns = None
+        rows = []
         for fld in sorted(nt["flds"], key=lambda f: f["ord"]):
             w = FieldConfigWidget(
                 fld["name"], is_front=_is_front_field(fld["name"]),
                 nt_id=nt["id"], nt_name=nt["name"], config=saved.get(fld["name"]))
             w.changed.connect(lambda w=w: self._on_field_changed(w))
-            self.fields_layout.insertWidget(self.fields_layout.count() - 1, w)
+            tl.addWidget(w)
+            w.finalize_columns()
+            if columns is None:
+                columns = FieldTableHeader(w)
+                tl.insertWidget(0, columns)
+                self._nt_headers.append(columns)
+            rows.append(w)
             self.field_widgets.append(w)
+        if rows:
+            rows[-1].setProperty("last", True)
+            rows[-1].style().unpolish(rows[-1])
+            rows[-1].style().polish(rows[-1])
+
+    # ------------------------------------------------------- field presets
+    def _field_info(self, text):
+        self.fields_info.setText(text)
+        self.fields_info.setVisible(True)
+        self._fields_info_timer.start(4000)
+
+    def _fill_field_preset_menu(self):
+        menu = self.field_preset_menu
+        menu.clear()
+        names = _store.field_preset_names()
+        if names:
+            for name in names:
+                act = menu.addAction(name)
+                act.triggered.connect(lambda _=False, n=name: self._apply_field_preset(n))
+        else:
+            act = menu.addAction(_t("preset_none"))
+            act.setEnabled(False)
+        menu.addSeparator()
+        save = menu.addAction(_t("btn_preset_save"))
+        save.triggered.connect(self._save_field_preset)
+        save.setEnabled(bool(self.field_widgets))
+        if names:
+            delete = menu.addMenu(_t("btn_preset_delete"))
+            for name in names:
+                act = delete.addAction(name)
+                act.triggered.connect(lambda _=False, n=name: self._delete_field_preset(n))
+
+    def _save_field_preset(self, name=None):
+        if not self.field_widgets:
+            return False
+        if name is None:
+            name, ok = QInputDialog.getText(self, _t("grp_presets"), _t("preset_prompt"),
+                                            text=self._nt_shown["name"] if self._nt_shown else "")
+            name = (name or "").strip()
+            if not ok or not name:
+                return False
+            if name in _store.field_presets and not askUser(
+                    _t("msg_preset_overwrite").format(name), parent=self):
+                return False
+        _store.save_field_preset(name, [(w.field_name, w.get_config()) for w in self.field_widgets])
+        _store.save()
+        self._field_info(_t("msg_preset_saved").format(name))
+        return True
+
+    def _apply_field_preset(self, name):
+        nt = self._nt_shown
+        if not nt or _notetype_is_io(nt):
+            return 0
+        names = [f["name"] for f in sorted(nt["flds"], key=lambda f: f["ord"])]
+        applied = _store.apply_field_preset(name, nt["name"], names)
+        if applied:
+            _store.save()
+            self._show_notetype(nt["id"], None)
+            self._field_info(_t("msg_preset_applied").format(name))
+        return applied
+
+    def _delete_field_preset(self, name, confirm=True):
+        if confirm and not askUser(_t("msg_preset_delete").format(name), parent=self):
+            return False
+        _store.delete_field_preset(name)
+        _store.save()
+        self._field_info(_t("msg_preset_deleted").format(name))
+        return True
 
     def _on_field_changed(self, w):
         if self._loading:
@@ -1937,7 +1859,8 @@ class PDFExportDialog(QDialog):
     def _reset_note_type(self, nt_name):
         _store.reset_fields(nt_name)
         self._schedule_save()
-        self._load_fields()
+        if self._nt_shown is not None:
+            self._show_notetype(self._nt_shown["id"], None)
 
     # ------------------------------------------------------------------ logs
     def _show_logs(self):
@@ -2300,13 +2223,8 @@ class PDFExportDialog(QDialog):
             self.busy_overlay_bar.setValue(self._busy_val)
         if hasattr(self, "busy_bar"):
             self.busy_bar.setValue(self._busy_val)
-        
-        self._spinner_idx = (self._spinner_idx + 1) % len(self._spinner_frames)
-        frame = self._spinner_frames[self._spinner_idx]
-        
-        msg = self._base_busy_message or ""
         if hasattr(self, "busy_overlay_label"):
-            self.busy_overlay_label.setText("{}   {}".format(frame, msg))
+            self.busy_overlay_label.setText(self._base_busy_message or "")
 
     def _set_busy_message(self, message):
         self._base_busy_message = message
@@ -2323,7 +2241,6 @@ class PDFExportDialog(QDialog):
         if self._busy_depth == 0:
             QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
             self._busy_val = 0
-            self._spinner_idx = 0
             if hasattr(self, "_busy_timer"):
                 self._busy_timer.start(80)
         self._busy_depth += 1
@@ -2811,8 +2728,17 @@ class PDFExportDialog(QDialog):
         self._end_busy(force=True)
 
     def _collect_fc(self):
-        """{note type id: {field name: config}} for the widgets currently shown."""
+        """{note type id: {field name: config}}: what is remembered for every note type, with
+        the rows on screen taking precedence. Fields never touched fall back to the automatic
+        front/back guess at export time."""
         fc = {}
+        try:
+            for item in mw.col.models.all_names_and_ids():
+                saved = _store.get_fields(item.name)
+                if saved:
+                    fc[item.id] = saved
+        except Exception as e:
+            logger.error("Note type list failed", e)
         for w in self.field_widgets:
             fc.setdefault(w.nt_id, {})[w.field_name] = w.get_config()
         return fc
@@ -2848,6 +2774,7 @@ class PDFExportDialog(QDialog):
             "io_mode": self.io_combo.currentIndex(),
             "order": self.order_combo.currentIndex(),
             "page_numbers": self.page_numbers_cb.isChecked(),
+            "tab": self.tabs.currentIndex(),
         }
 
     @staticmethod
@@ -2888,6 +2815,8 @@ class PDFExportDialog(QDialog):
             self._set_combo(self.io_combo, s["io_mode"])
             self._set_combo(self.order_combo, s["order"])
             self.page_numbers_cb.setChecked(s["page_numbers"])
+            if 0 <= s["tab"] < self.stack.count() and self.tabs.buttons[s["tab"]].isVisibleTo(self.tabs):
+                self.tabs.setCurrentIndex(s["tab"])
             self.lang_combo.blockSignals(True)
             self._set_combo(self.lang_combo, self.lang_combo.findData(s["language"]))
             self.lang_combo.blockSignals(False)
@@ -2897,7 +2826,7 @@ class PDFExportDialog(QDialog):
 
     def _connect_autosave(self):
         sched = self._schedule_save
-        for rg in (self.theme_radio, self.width_radio, self.layout_radio, self.render_radio):
+        for rg in (self.theme_radio, self.width_radio, self.layout_radio, self.render_radio, self.tabs):
             rg.group.idToggled.connect(sched)
         for cb in (self.show_title_cb, self.card_numbers_cb, self.zebra_cb, self.high_contrast_cb,
                    self.strip_html_cb, self.grid_cb, self.debug_cb, self.page_numbers_cb):
@@ -4157,6 +4086,7 @@ def _rebuild_dialog():
         dlg = _get_dialog()
         if selected:
             dlg.select_deck(selected)
+        dlg.tabs.setCurrentIndex(dlg.stack.count() - 1)  # back on Settings, where the language was changed
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()

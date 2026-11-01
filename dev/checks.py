@@ -145,6 +145,12 @@ def check_store(col, load_addon, pick):
     st2.reset_fields()
     ok(st2.settings["theme"] == 0 and st2.fields == {}, "reset to defaults")
     ok(st2.settings["language"] == "de" and "Print compact" in st2.presets, "reset keeps language + presets")
+    ok(st2.save_field_preset("FP", [("Front", {"bold": True}), ("Back", {"size": 0})]), "field preset saved")
+    ok(st2.apply_field_preset("FP", "Cloze", ["Text", "Back Extra"]) == 2
+       and st2.get_fields("Cloze")["Back Extra"]["size"] == 0, "field preset applies by position")
+    st2.save()
+    ok("FP" in store.SettingsStore(path).field_presets, "field presets persist")
+    st2.delete_field_preset("FP")
     ok(st2.delete_preset("Print compact") and not st2.presets, "preset deleted")
 
     with open(path, "w") as fh:
@@ -215,11 +221,141 @@ def check_translations(col, load_addon, pick):
     shutil.rmtree(stage, ignore_errors=True)
 
 
+def check_responsive(col, load_addon, pick):
+    print("Responsive window")
+    app, mw, mod, stage = load_addon(col)
+    from aqt.qt import QApplication, QPoint
+    from PyQt6.QtTest import QTest
+    dlg = mod.PDFExportDialog(mw)
+    pick(dlg, "Pharma::Cardio")
+    dlg.show()
+    dlg.tabs.setCurrentIndex(3)
+    QApplication.processEvents()
+    mn = dlg.minimumSize()
+    ok(mn.width() <= 640 and mn.height() <= 480, "window can shrink to {}x{}".format(mn.width(), mn.height()))
+
+    dlg.resize(1100, 720)
+    QApplication.processEvents()
+    ok(not any(w._compact for w in dlg.field_widgets), "wide window: one-line field rows")
+    row = dlg.field_widgets[0]
+    header = next(h for h in dlg._nt_headers if isinstance(h, mod.FieldTableHeader))
+    sec_x = row.section_combo.mapTo(dlg, QPoint(0, 0)).x()
+    cap = header.layout().itemAt(2).widget()
+    cap_x = cap.mapTo(dlg, QPoint(0, 0)).x()
+    ok(abs(sec_x - cap_x) <= 1, "column header lines up with the rows ({} vs {})".format(sec_x, cap_x))
+    right = row.adv_btn.mapTo(dlg, QPoint(row.adv_btn.width(), 0)).x()
+    table = row.parentWidget()
+    ok(right <= table.mapTo(dlg, QPoint(table.width(), 0)).x(), "row controls stay inside the table")
+
+    dlg.resize(1, 1)
+    QApplication.processEvents()
+    ok(all(w._compact for w in dlg.field_widgets), "narrow window: two-line field rows")
+    right = row.label_col.mapTo(dlg, QPoint(row.label_col.width(), 0)).x()
+    ok(right <= row.mapTo(dlg, QPoint(row.width(), 0)).x(), "compact row is not clipped")
+
+    row.export_cb.setChecked(False)
+    ok(not row.section_combo.isEnabled() and not row.size_radio.isEnabled(),
+       "unchecked field greys out its settings")
+    row.export_cb.setChecked(True)
+
+    QTest.keyClick(dlg, mod.Qt.Key.Key_2, mod.Qt.KeyboardModifier.ControlModifier)
+    ok(dlg.stack.currentIndex() == 1, "Ctrl/Cmd+2 switches to the second tab")
+    dlg._flush_save()
+    dlg2 = mod.PDFExportDialog(mw)
+    ok(dlg2.stack.currentIndex() == 1, "last tab is restored")
+    dlg.render_radio.setCurrentIndex(1)
+    QTest.keyClick(dlg, mod.Qt.Key.Key_4, mod.Qt.KeyboardModifier.ControlModifier)
+    ok(dlg.stack.currentIndex() != 3, "hidden Fields tab cannot be reached by shortcut")
+    dlg.close()
+    dlg2.close()
+    shutil.rmtree(stage, ignore_errors=True)
+
+
+def check_notetypes(col, load_addon, pick):
+    print("Note type editor / field presets")
+    app, mw, mod, stage = load_addon(col)
+    dlg = mod.PDFExportDialog(mw)
+    pick(dlg, "Pharma::Cardio")
+    shown = lambda: {w.nt_name for w in dlg.field_widgets}
+    ok(shown() == {"Basic"}, "most used note type of the deck is edited first ({})".format(shown()))
+    ok(dlg.nt_source.text() == mod._t("nt_detect_deck"), "source hint: most used in deck")
+
+    # the card under review decides which type is shown when the window opens
+    cloze = col.models.by_name("Cloze")
+
+    class FakeCard:
+        def note_type(self):
+            return cloze
+
+    class FakeReviewer:
+        card = FakeCard()
+
+    mw.state, mw.reviewer = "review", FakeReviewer()
+    dlg.refresh_collection()
+    ok(shown() == {"Cloze"}, "current card's note type is detected ({})".format(shown()))
+    ok(dlg.nt_source.text() == mod._t("nt_detect_card"), "source hint: current card")
+    mw.state = "deckBrowser"
+
+    # any note type can be picked and edited, also one the deck does not use
+    i = dlg.nt_combo.findText("Basic (optional reversed card)")
+    ok(i >= 0, "note types outside the deck are listed")
+    dlg.nt_combo.setCurrentIndex(i)
+    dlg.nt_combo.activated.emit(i)
+    ok(shown() == {"Basic (optional reversed card)"}, "picked note type is shown")
+    ok(dlg.nt_source.text() == mod._t("nt_not_in_deck"), "source hint: not used in deck")
+    row = next(w for w in dlg.field_widgets if w.field_name == "Back")
+    row.size_radio.setCurrentIndex(3)
+    dlg._flush_save()
+    ok(mod._store.get_fields("Basic (optional reversed card)")["Back"]["size"] == 3,
+       "edits are saved under the picked note type")
+
+    # field presets: save from Basic, apply to Cloze (no common names -> by position)
+    i = dlg.nt_combo.findData(col.models.by_name("Basic")["id"])
+    dlg.nt_combo.setCurrentIndex(i)
+    dlg.nt_combo.activated.emit(i)
+    front = next(w for w in dlg.field_widgets if w.field_name == "Front")
+    front.size_radio.setCurrentIndex(0)
+    front.underline_cb.setChecked(True)
+    ok(dlg._save_field_preset("Tiny front"), "field preset saved")
+    ok("Tiny front" in mod._store.field_presets, "field preset stored")
+    i = dlg.nt_combo.findData(cloze["id"])
+    dlg.nt_combo.setCurrentIndex(i)
+    dlg.nt_combo.activated.emit(i)
+    ok(dlg._apply_field_preset("Tiny front") == 2, "preset applied to another note type")
+    text = next(w for w in dlg.field_widgets if w.field_name == "Text")
+    ok(text.size_radio.currentIndex() == 0 and text.underline_cb.isChecked(),
+       "fields matched by position, rows refreshed")
+    dlg._fill_field_preset_menu()
+    titles = [a.text() for a in dlg.field_preset_menu.actions()]
+    ok("Tiny front" in titles, "presets listed in the menu")
+
+    # export uses the remembered config of a note type that is not on screen
+    i = dlg.nt_combo.findData(col.models.by_name("Basic")["id"])
+    dlg.nt_combo.setCurrentIndex(i)
+    dlg.nt_combo.activated.emit(i)
+    fc = dlg._collect_fc()
+    ok(fc.get(cloze["id"], {}).get("Text", {}).get("underline") is True,
+       "export keeps settings of note types not shown")
+    ok(dlg._delete_field_preset("Tiny front", confirm=False) and not mod._store.field_presets,
+       "field preset deleted")
+
+    io = next(x for x in col.models.all_names_and_ids() if "Occlusion" in x.name)
+    i = dlg.nt_combo.findData(io.id)
+    dlg.nt_combo.setCurrentIndex(i)
+    dlg.nt_combo.activated.emit(i)
+    ok(not dlg.field_preset_btn.isEnabled() and not dlg.field_widgets,
+       "Image Occlusion: presets off, automatic layout note")
+    dlg.close()
+    shutil.rmtree(stage, ignore_errors=True)
+
+
 def run_checks(col, load_addon, pick):
     check_html(col, load_addon, pick)
     check_store(col, load_addon, pick)
     check_dialog_state(col, load_addon, pick)
     check_translations(col, load_addon, pick)
+    check_responsive(col, load_addon, pick)
+    check_notetypes(col, load_addon, pick)
     print("\n{} check(s) failed".format(len(FAILS)) if FAILS else "\nall checks passed")
     for f in FAILS:
         print("  - " + f)

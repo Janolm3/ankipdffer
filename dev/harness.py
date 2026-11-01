@@ -142,12 +142,21 @@ def scenario_shots(col):
         pick(dlg, "Pharma::Cardio")
         dlg.show()
         app.processEvents()
-        for i, name in enumerate(("basic", "advanced", "fields", "settings")):
-            dlg.sidebar.setCurrentRow(i)
+        for i, name in enumerate(("content", "appearance", "page", "fields", "settings")):
+            dlg.tabs.setCurrentIndex(i)
             app.processEvents()
             path = os.path.join(OUT, "shot-{}-{}.png".format(name, "dark" if dark else "light"))
             dlg.grab().save(path)
             print("wrote", path)
+        # extra states: an expanded field row, and Cards mode (Fields tab hidden)
+        dlg.tabs.setCurrentIndex(3)
+        if dlg.field_widgets:
+            dlg.field_widgets[0].adv_btn.click()
+        app.processEvents()
+        dlg.grab().save(os.path.join(OUT, "shot-fields-open-{}.png".format("dark" if dark else "light")))
+        dlg.render_radio.setCurrentIndex(1)
+        app.processEvents()
+        dlg.grab().save(os.path.join(OUT, "shot-cards-mode-{}.png".format("dark" if dark else "light")))
         dlg.close()
         shutil.rmtree(stage, ignore_errors=True)
 
@@ -297,8 +306,13 @@ def main(argv):
     from PyQt6 import QtWebEngineWidgets  # noqa: F401  (must precede QApplication)
     from PyQt6.QtWidgets import QApplication
     _app = QApplication.instance() or QApplication(sys.argv)  # keep a reference alive
-    shutil.rmtree(OUT, ignore_errors=True)
-    os.makedirs(OUT)
+    os.makedirs(OUT, exist_ok=True)
+    # remove only the files of the scenarios being re-run; everything else stays
+    owned = {"shots": ("shot-",), "html": ("html-",), "pdf": ("export-", "pg-")}
+    prefixes = tuple(p for name in which for p in owned.get(name, ()))
+    for name in os.listdir(OUT):
+        if prefixes and name.startswith(prefixes):
+            os.remove(os.path.join(OUT, name))
     tmp = tempfile.mkdtemp(prefix="pdffer-col-")
     col = build_collection(tmp)
     try:

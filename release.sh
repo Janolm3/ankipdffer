@@ -2,7 +2,8 @@
 # Usage: ./release.sh [version] [--build-only]
 # Example: ./release.sh 1.4.0 --build-only
 #
-# Builds dist/AnkiPdffer-<version>.zip from a clean staging copy (the working tree is not
+# Builds dist/AnkiPdffer-<version>.ankiaddon (upload this to AnkiWeb) and an identical .zip
+# from a clean staging copy (the working tree is not
 # pruned or modified except for manifest.json's human_version) and, unless --build-only
 # is given, publishes it as a GitHub release via the gh CLI.
 # The version defaults to the one already in manifest.json.
@@ -27,6 +28,7 @@ fi
 
 PACKAGE_NAME="AnkiPdffer"
 ZIP_NAME="${PACKAGE_NAME}-${VERSION}.zip"
+ADDON_NAME="${PACKAGE_NAME}-${VERSION}.ankiaddon"
 DIST_DIR="${ADDON_DIR}/dist"
 
 # Keep every version string in step with the release version.
@@ -62,7 +64,7 @@ rsync -a \
     --exclude ".git" --exclude ".gitignore" --exclude "dev/" --exclude "dist/" \
     --exclude "__pycache__/" --exclude "*.pyc" --exclude ".DS_Store" \
     --exclude "settings.json" --exclude "meta.json" --exclude "last_export_log.txt" \
-    --exclude "release.sh" --exclude "CHANGELOG.md" --exclude "README.md" \
+    --exclude "release.sh" --exclude "CHANGELOG.md" --exclude "README.md" --exclude "docs/" \
     ./ "${STAGE}/"
 
 echo "==> Pruning unneeded files from .vendor/ to reduce package size"
@@ -76,13 +78,15 @@ rm -f "${DIST_DIR}/${ZIP_NAME}"
 
 # Sanity: the modules __init__.py imports must be in the zip.
 LISTING="$(unzip -l "${DIST_DIR}/${ZIP_NAME}")"
-for required in __init__.py manifest.json store.py translations.py; do
+for required in __init__.py manifest.json store.py translations.py macui.py; do
     grep -q " ${required}\$" <<<"${LISTING}" || {
         echo "!! ${required} missing from ${ZIP_NAME}" >&2
         exit 1
     }
 done
-echo "==> Created ${DIST_DIR}/${ZIP_NAME} ($(du -h "${DIST_DIR}/${ZIP_NAME}" | cut -f1))"
+# AnkiWeb wants .ankiaddon: the same zip (files at the root, no __pycache__) under another name
+cp "${DIST_DIR}/${ZIP_NAME}" "${DIST_DIR}/${ADDON_NAME}"
+echo "==> Created ${DIST_DIR}/${ADDON_NAME} and .zip ($(du -h "${DIST_DIR}/${ZIP_NAME}" | cut -f1))"
 
 if [ "${BUILD_ONLY}" = "1" ]; then
     echo "==> --build-only: not publishing."
@@ -98,13 +102,13 @@ fi
 
 echo "==> Creating GitHub release v${VERSION}"
 gh release create "v${VERSION}" \
-    "${DIST_DIR}/${ZIP_NAME}" \
+    "${DIST_DIR}/${ADDON_NAME}" "${DIST_DIR}/${ZIP_NAME}" \
     --title "v${VERSION}" \
     --notes "$(cat <<EOF
 ## AnkiPdffer v${VERSION}
 
 ### Install
-1. Download \`${ZIP_NAME}\` below
+1. Download \`${ADDON_NAME}\` below (or install code 1987190048 from AnkiWeb)
 2. Anki → Tools → Add-ons → Install from file…
 3. Restart Anki
 
