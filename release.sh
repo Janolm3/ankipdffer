@@ -63,7 +63,7 @@ trap 'rm -rf "${STAGE}"' EXIT
 rsync -a \
     --exclude ".git" --exclude ".gitignore" --exclude "dev/" --exclude "dist/" \
     --exclude "__pycache__/" --exclude "*.pyc" --exclude ".DS_Store" \
-    --exclude "settings.json" --exclude "meta.json" --exclude "last_export_log.txt" \
+    --exclude "settings.json" --exclude "meta.json" --exclude "last_export_log.txt" --exclude "user_files/" \
     --exclude "release.sh" --exclude "CHANGELOG.md" --exclude "README.md" --exclude "docs/" \
     ./ "${STAGE}/"
 

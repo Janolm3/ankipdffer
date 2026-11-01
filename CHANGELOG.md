@@ -2,6 +2,14 @@
 
 All notable changes to the **AnkiPdffer Dev** add-on will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **PDF engine setup on Windows**: *Settings → PDF engine → Set up…* now installs WeasyPrint on Windows too — Python (winget), Pango from MSYS2 (winget + pacman) and WeasyPrint 68.1 in a private environment inside the add-on's `user_files` folder (kept across updates), step by step with a live log. Without winget, the Python and MSYS2 download pages open and the remaining steps run afterwards. *Copy commands* gives the Windows commands.
+
+### Fixed
+- The macOS-only bundled packages are no longer put in front of other Pythons, so a WeasyPrint installed for the system Python (Linux) or the private environment (Windows) can load. If another WeasyPrint version cannot run the layout pass, the PDF is rendered without it instead of falling back to the built-in renderer.
+
 ## [1.4.1] - 2026-11-01
 
 ### Changed
