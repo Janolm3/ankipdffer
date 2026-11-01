@@ -1073,7 +1073,6 @@ class PDFExportDialog(QDialog):
         self.tab_box.finish()
         self.tabs = self.tab_box.tabs
         self.stack = self.tab_box.stack
-        self._engine_report = None
         self.stack.currentChanged.connect(
             lambda i: i == self.stack.count() - 1 and self._engine_report is None and self._check_engine())
         body = QVBoxLayout()
@@ -1457,13 +1456,20 @@ class PDFExportDialog(QDialog):
         self.log_btn.clicked.connect(self._show_logs)
         self.debug_cb.toggled.connect(self.log_btn.setVisible)
         form.addRow(_t("grp_debug") + ":", self._hrow(self.debug_cb, 6, self.log_btn))
+        self.overview_cb = QCheckBox(_t("cb_overview_button"))
+        self.overview_cb.toggled.connect(_set_overview_button)
+        form.addRow(_t("grp_deck_screen") + ":", self.overview_cb)
 
         form.addRow(macui.separator())
-        self.engine_status = QLabel(_t("engine_checking"))
+        self.engine_status = QLabel()
+        self.engine_status.setObjectName("Secondary")
+        self.engine_status.setTextFormat(Qt.TextFormat.RichText)
         self.engine_status.setWordWrap(True)
         self.engine_status.setMinimumWidth(300)
         self.engine_status.setMaximumWidth(420)
         form.addRow(_t("grp_engine") + ":", self.engine_status)
+        self._engine_report = None
+        self._show_engine_status()  # last known state; re-checked quietly on the first visit
         self.engine_check_btn = QPushButton(_t("btn_engine_check"))
         self.engine_check_btn.clicked.connect(lambda: self._check_engine(force=True))
         self.engine_setup_btn = QPushButton(_t("btn_engine_setup"))
@@ -1591,8 +1597,9 @@ class PDFExportDialog(QDialog):
             callbacks.append(then)
         if getattr(self, "_engine_thread", None) is not None:
             return  # a check is already running; its result goes to every waiting caller
-        self.engine_status.setText(_t("engine_checking"))
-        self.engine_check_btn.setEnabled(False)
+        if force:
+            self.engine_status.setText(_t("engine_checking"))
+            self.engine_check_btn.setEnabled(False)
         box = {}
 
         def work():
@@ -1607,6 +1614,10 @@ class PDFExportDialog(QDialog):
                 return
             self._engine_thread = None
             self._engine_report = box["report"]
+            state = "ok" if self._engine_report.get("engine") else "missing"
+            if _store.settings.get("engine_state") != state:
+                _store.update_settings({"engine_state": state})
+                _store.save()
             self.engine_check_btn.setEnabled(True)
             self._show_engine_status()
             waiting, self._engine_callbacks = self._engine_callbacks, []
@@ -1616,14 +1627,20 @@ class PDFExportDialog(QDialog):
         QTimer.singleShot(150, poll)
 
     def _show_engine_status(self):
-        r = self._engine_report or {}
+        r = self._engine_report
+        if r is None:  # not probed in this session yet: show the last known result
+            state = _store.settings.get("engine_state", "")
+            if not state:
+                self.engine_status.setText(html_module.escape(_t("engine_checking")))
+                return
+            r = {"engine": state == "ok"}
         if r.get("engine"):
-            self.engine_status.setText("\u25cf  " + _t("engine_ok"))
-            self.engine_status.setStyleSheet("color: #28a745;")
+            dot, text = '<span style="color:#34c759;">\u25cf</span>', _t("engine_ok")
         else:
-            self.engine_status.setText("\u25cb  " + _t(
-                "engine_missing" if r.get("macos", True) else "eng_unsupported"))
-            self.engine_status.setStyleSheet("")
+            dot = "\u25cb"
+            text = _t("engine_missing" if r.get("macos", True) else "eng_unsupported")
+        # quiet secondary text; only the dot carries the colour
+        self.engine_status.setText("{}&nbsp; {}".format(dot, html_module.escape(text)))
         self.engine_setup_btn.setEnabled(bool(r.get("macos", True)))
 
     def _open_engine_setup(self):
@@ -1727,11 +1744,11 @@ class PDFExportDialog(QDialog):
         finally:
             self._loading = was_loading
 
-    def refresh_collection(self):
-        """Re-read the deck list when the window is shown again; keeps the selection and
-        re-detects the note type of the card being studied."""
+    def refresh_collection(self, deck=None):
+        """Re-read the deck list when the window is shown again; keeps the selection (or
+        selects `deck`) and re-detects the note type of the card being studied."""
         self._detect_pending = True
-        self.select_deck(self._sel())
+        self.select_deck(deck or self._sel())
 
     def _populate_decks(self, preferred=None):
         try:
@@ -1748,7 +1765,6 @@ class PDFExportDialog(QDialog):
         self.deck_combo.clear()
         for n in sorted(top.keys()):
             self.deck_combo.addItem(n, top[n])
-        self.deck_combo.blockSignals(False)
         target = preferred
         if not target:
             try:
@@ -1760,6 +1776,9 @@ class PDFExportDialog(QDialog):
             i = self.deck_combo.findText(target.split("::")[0])
             if i >= 0:
                 self.deck_combo.setCurrentIndex(i)
+        # signals stay blocked until the selection is final: the field table and the card
+        # count are rebuilt once below, not once per intermediate index change
+        self.deck_combo.blockSignals(False)
         self._want_sub = target
         self._on_deck_changed()
 
@@ -1783,7 +1802,6 @@ class PDFExportDialog(QDialog):
                 else:
                     display = parts[0]
                 self.subdeck_combo.addItem(display, d.name)
-        self.subdeck_combo.blockSignals(False)
         for combo in (self.deck_combo, self.subdeck_combo):
             self._fit_popup_width(combo)
         want = getattr(self, "_want_sub", None)
@@ -1798,6 +1816,7 @@ class PDFExportDialog(QDialog):
             i = self.subdeck_combo.findData(want)
             if i >= 0:
                 self.subdeck_combo.setCurrentIndex(i)
+        self.subdeck_combo.blockSignals(False)
         self._on_subdeck_changed()
 
     @staticmethod
@@ -3042,6 +3061,7 @@ class PDFExportDialog(QDialog):
             "grid": self.grid_cb.isChecked(),
             "language": self.lang_combo.currentData() or "en",
             "debug": self.debug_cb.isChecked(),
+            "overview_button": self.overview_cb.isChecked(),
             "high_contrast": self.high_contrast_cb.isChecked(),
             "qa_layout": self.qa_combo.currentIndex(),
             "cloze_mode": self.cloze_combo.currentIndex(),
@@ -3083,6 +3103,7 @@ class PDFExportDialog(QDialog):
             self._set_combo(self.card_style_combo, s["card_style"])
             self.grid_cb.setChecked(s["grid"])
             self.debug_cb.setChecked(s["debug"])
+            self.overview_cb.setChecked(s["overview_button"])
             self.high_contrast_cb.setChecked(s["high_contrast"])
             self._set_combo(self.qa_combo, s["qa_layout"])
             self._set_combo(self.cloze_combo, s["cloze_mode"])
@@ -3103,7 +3124,8 @@ class PDFExportDialog(QDialog):
         for rg in (self.theme_radio, self.width_radio, self.layout_radio, self.render_radio, self.tabs):
             rg.group.idToggled.connect(sched)
         for cb in (self.show_title_cb, self.card_numbers_cb, self.zebra_cb, self.high_contrast_cb,
-                   self.strip_html_cb, self.grid_cb, self.debug_cb, self.page_numbers_cb):
+                   self.strip_html_cb, self.grid_cb, self.debug_cb, self.page_numbers_cb,
+                   self.overview_cb):
             cb.toggled.connect(sched)
         for sp in (self.fontsize_spin, self.width_spin, self.margin_spin, self.top_margin_spin,
                    self.padding_spin, self.gap_spin, self.lh_spin, self.img_h_spin):
@@ -4554,8 +4576,8 @@ def _dialog_alive(dlg):
         return False
 
 
-def _get_dialog():
-    """Return THE export window, creating it only when needed.
+def _get_dialog(deck=None):
+    """Return THE export window, creating it only when needed (on `deck` if given).
 
     One window is reused for the whole session (so it can be restored instead of
     stacking new ones); it is rebuilt only when the collection/profile changed.
@@ -4568,14 +4590,19 @@ def _get_dialog():
             _dlg.deleteLater()
         _dlg = None
     if _dlg is None:
-        _dlg = PDFExportDialog(mw)
+        _dlg = PDFExportDialog(mw)  # opens on Anki's current deck
+        if deck and _dlg._sel() != deck:
+            _dlg.select_deck(deck)
     elif not _dlg.isVisible():
-        _dlg.refresh_collection()
+        _dlg.refresh_collection(deck)
+    elif deck and _dlg._sel() != deck:
+        _dlg.select_deck(deck)
     return _dlg
 
 
-def show_export_dialog():
-    dlg = _get_dialog()
+def show_export_dialog(deck=None):
+    # QAction.triggered passes a bool as the first argument
+    dlg = _get_dialog(deck if isinstance(deck, str) and deck else None)
     if dlg is None:
         showWarning(_t("msg_no_collection"))
         return
@@ -4636,3 +4663,141 @@ def _retranslate_menu():
     _dev_menu.setTitle(_t("menu_root"))
     action.setText(_t("menu_action"))
     _quick_legacy_action.setText(_t("menu_quick_legacy"))
+
+
+# ---------------------------------------------------------------- deck screen button
+OVERVIEW_CMD = "ankipdffer:export"
+_PDF_ICON = (
+    '<svg width="12" height="13" viewBox="0 0 13 14" fill="none" stroke="currentColor" '
+    'stroke-width="1.25" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">'
+    '<path d="M2 1h6l3 3v9H2z"/><path d="M8 1v3h3"/><path d="M4.5 7.5h4M4.5 10h4"/></svg>'
+)
+# OS X push button (Yosemite–El Capitan): white-to-light-grey gradient, hairline border,
+# 5 px corners, soft drop shadow; it turns blue while pressed. Dark mode gets the graphite
+# version of the pro apps of that time. Anki's own pill style is overridden on purpose.
+_OVERVIEW_CSS = """
+#ankipdffer-overview{margin:6px 0 14px;text-align:center}
+#ankipdffer-overview .pdffer-btn{
+  -webkit-appearance:none;appearance:none;display:inline-flex;align-items:center;gap:6px;
+  height:23px;margin:0;padding:0 13px;box-sizing:border-box;border-radius:5px;cursor:default;
+  font:13px/1 -apple-system,BlinkMacSystemFont,"Helvetica Neue","Segoe UI",Arial,sans-serif;
+  letter-spacing:0;white-space:nowrap;color:#1d1d1f;
+  background:linear-gradient(#fff,#f1f1f1);
+  border:1px solid #c5c5c5;border-bottom-color:#adadad;
+  box-shadow:0 1px 1px rgba(0,0,0,.07),inset 0 1px 0 rgba(255,255,255,.85);
+  transition:none;user-select:none;-webkit-user-select:none}
+#ankipdffer-overview .pdffer-btn svg{flex:none;opacity:.8}
+#ankipdffer-overview .pdffer-btn:hover{background:linear-gradient(#fff,#ececec)}
+#ankipdffer-overview .pdffer-btn:active{
+  color:#fff;background:linear-gradient(#6cb3fa,#0a7aff);
+  border-color:#3d8fe6;border-bottom-color:#2b6fd6;
+  box-shadow:0 1px 1px rgba(0,0,0,.08),inset 0 1px 0 rgba(255,255,255,.25)}
+#ankipdffer-overview .pdffer-btn:active svg{opacity:1}
+#ankipdffer-overview .pdffer-btn:focus{outline:none}
+#ankipdffer-overview .pdffer-btn:focus-visible{
+  box-shadow:0 0 0 3px rgba(59,153,252,.5),inset 0 1px 0 rgba(255,255,255,.85)}
+.night-mode #ankipdffer-overview .pdffer-btn,.nightMode #ankipdffer-overview .pdffer-btn{
+  color:#e9e9eb;background:linear-gradient(#5b5b5e,#47474a);
+  border-color:#2a2a2c;border-bottom-color:#1c1c1e;
+  box-shadow:0 1px 1px rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.13)}
+.night-mode #ankipdffer-overview .pdffer-btn:hover,
+.nightMode #ankipdffer-overview .pdffer-btn:hover{background:linear-gradient(#636366,#4c4c4f)}
+.night-mode #ankipdffer-overview .pdffer-btn:active,
+.nightMode #ankipdffer-overview .pdffer-btn:active{
+  color:#fff;background:linear-gradient(#4a9bf5,#0a6ee0);
+  border-color:#1d4f9a;border-bottom-color:#163f7d;
+  box-shadow:0 1px 1px rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.2)}
+"""
+# The congratulations screen is a page that renders itself after loading, so the button is
+# added from outside and kept below its content.
+_CONGRATS_JS = """
+(function () {
+  if (document.getElementById("ankipdffer-overview")) return;
+  var holder = document.createElement("div");
+  holder.innerHTML = %s;
+  var box = holder.firstChild;
+  box.style.textAlign = "center";
+  box.style.margin = "0 0 28px";
+  document.body.appendChild(box);
+  new MutationObserver(function () {
+    if (document.body.lastElementChild !== box) document.body.appendChild(box);
+  }).observe(document.body, {childList: true});
+})();
+"""
+
+
+def _overview_button_on():
+    return bool(_store.settings.get("overview_button", True))
+
+
+def _overview_button_html():
+    return (
+        '<div id="ankipdffer-overview"><style>{css}</style>'
+        '<button class="pdffer-btn" tabindex="-1" title="{tip}" '
+        'onmousedown="event.preventDefault()" onclick="pycmd(\'{cmd}\');return false;">'
+        '{icon}<span>{label}</span></button></div>'
+    ).format(css=_OVERVIEW_CSS, tip=html_module.escape(_t("tip_overview_pdf")), cmd=OVERVIEW_CMD,
+             icon=_PDF_ICON, label=html_module.escape(_t("btn_overview_pdf")))
+
+
+def _on_overview_content(overview, content):
+    """Deck screen: the button goes centred right below Anki's counts / Study Now table,
+    before anything other add-ons appended (or at the end if the table was reshaped)."""
+    if not _overview_button_on():
+        return
+    table = content.table or ""
+    study = table.find('id="study"')
+    end = table.find("</td></tr></table>", study) if study >= 0 else -1
+    if end >= 0:
+        end += len("</td></tr></table>")
+        content.table = table[:end] + _overview_button_html() + table[end:]
+    else:
+        content.table = table + _overview_button_html()
+
+
+def _on_page_styled(webview):
+    if (mw is None or webview is not getattr(mw, "web", None)
+            or getattr(mw, "state", "") != "overview" or not _overview_button_on()):
+        return
+    try:
+        url = webview.page().url().toString()
+    except Exception:
+        return
+    if "congrats" in url:
+        webview.eval(_CONGRATS_JS % json.dumps(_overview_button_html()))
+
+
+def _on_js_message(handled, message, context):
+    if message != OVERVIEW_CMD:
+        return handled
+    try:
+        cur = mw.col.decks.current()
+    except Exception:
+        cur = None
+    show_export_dialog(cur["name"] if cur else None)
+    try:  # back on the deck screen, Enter keeps starting the review
+        mw.web.eval("var s=document.getElementById('study');if(s)s.focus();")
+    except Exception:
+        pass
+    return True, None
+
+
+def _set_overview_button(on):
+    """Settings checkbox: show or hide the button right away."""
+    on = bool(on)
+    if _overview_button_on() == on:
+        return
+    _store.update_settings({"overview_button": on})
+    if mw is not None and getattr(mw, "state", "") == "overview":
+        mw.overview.refresh()
+
+
+try:
+    from aqt import gui_hooks
+
+    gui_hooks.overview_will_render_content.append(_on_overview_content)
+    gui_hooks.webview_did_receive_js_message.append(_on_js_message)
+    if hasattr(gui_hooks, "webview_did_inject_style_into_page"):
+        gui_hooks.webview_did_inject_style_into_page.append(_on_page_styled)
+except Exception as e:  # never block the menu entry because of the deck screen button
+    logger.error("Deck screen button setup failed", e)

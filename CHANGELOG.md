@@ -2,6 +2,16 @@
 
 All notable changes to the **AnkiPdffer Dev** add-on will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **Export to PDF button on the deck screen**: a native OS X–style button right below Anki's counts and *Study Now* (also on the "Congratulations" screen) opens AnkiPdffer on that deck. It can be hidden in Settings → *Deck screen*.
+
+### Changed
+- The export window opens faster: the field table is built once instead of once per deck-picker change (reopening went from ~0.7 s to ~0.1 s on a 17,000-card collection).
+- Settings → PDF engine is quieter: grey text with a coloured dot, the last result shows at once and is re-checked silently in the background ("Checking…" only appears after *Check again*).
+- *Reset everything to defaults* looks like a normal button and turns muted red only on hover.
+
 ## [1.4.1] - 2026-11-01
 
 ### Changed

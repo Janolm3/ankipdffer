@@ -53,11 +53,13 @@ DEFAULT_SETTINGS = {
     "page_numbers": False,
     "tab": 0,             # last tab shown in the window
     "export_dir": "",     # folder of the last export ("" = Desktop)
+    "overview_button": True,  # "Export to PDF" button on Anki's deck screen
+    "engine_state": "",   # last PDF engine check: "ok", "missing" or "" (never checked)
 }
 
 # Options that describe *this machine / session* rather than the look of an export.
 # They are not part of presets and are left alone by "apply preset".
-MACHINE_KEYS = ("language", "debug", "tab", "export_dir")
+MACHINE_KEYS = ("language", "debug", "tab", "export_dir", "overview_button", "engine_state")
 
 DEFAULT_FIELD_CONFIG = {
     "export": True,

@@ -174,6 +174,8 @@ Tools → AnkiPdffer → Open export dialog…
 
 Then choose your deck (and optional filter), adjust the tabs, and export.
 
+Or open a deck and click **Export to PDF** below *Study Now* — the window opens on that deck (Settings → *Deck screen* hides the button).
+
 Quick export of the current deck to Legacy HTML:
 
 ```text

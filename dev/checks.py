@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import time
 import shutil
 import tempfile
 
@@ -428,10 +429,94 @@ def check_141(col, load_addon, pick):
     # engine probe (the real one: imports WeasyPrint with the bundled vendor dir)
     report = dlg._engine_probe()
     ok(set(report) >= {"macos", "brew", "python", "pango", "engine"}, "engine probe reports every part")
+    mod._store.update_settings({"engine_state": "ok"})
+    dlg._engine_report = None
+    dlg._show_engine_status()
+    label = dlg.engine_status.text()
+    ok(mod._t("engine_ok") in label and "#34c759" in label and dlg.engine_status.objectName() == "Secondary",
+       "engine status: last known result at once, quiet text, only the dot is green")
+    dlg._check_engine()
+    ok(dlg.engine_status.text() == label and dlg.engine_check_btn.isEnabled(),
+       "automatic re-check is silent (no 'Checking…', button stays enabled)")
+    started = time.time()
+    while dlg._engine_thread is not None and time.time() - started < 90:
+        app.processEvents()
+        time.sleep(0.05)
+    ok(mod._store.settings["engine_state"] in ("ok", "missing") and "engine_state" in mod.MACHINE_KEYS,
+       "check result remembered for the next session ({})".format(mod._store.settings["engine_state"]))
+    css = mod.macui.stylesheet(False)
+    ok(dlg.reset_btn.objectName() == "Destructive" and "QPushButton#Destructive {" not in css
+       and "background: #bf5a54" in css.split("QPushButton#Destructive:hover {", 1)[1][:80],
+       "Reset everything looks like any button and fills muted red only on hover")
     dialog = mod.EngineSetupDialog(dlg)
     ok("brew install python@3.14 pango" in dialog.commands()[1], "setup guide offers the brew command")
     dialog.reject()
     dlg.close()
+    shutil.rmtree(stage, ignore_errors=True)
+
+
+def check_overview_button(col, load_addon, pick):
+    print("Deck screen: Export to PDF button")
+    app, mw, mod, stage = load_addon(col)
+    from types import SimpleNamespace
+
+    study = ('<button id="study" class="but " onclick="pycmd(\'study\');return false;"\n'
+             'title="" autofocus>Study Now</button>')
+    table = ('<table width=400 cellpadding=5><tr><td align=center valign=top>counts</td>'
+             '<td align=center>\n' + study + '</td></tr></table>')
+    other_addon = '<div class="heatmap">stats from another add-on</div>'
+    content = SimpleNamespace(table=table + other_addon)
+    mod._on_overview_content(None, content)
+    t = content.table
+    ok(t.startswith(table) and t.index('<div id="ankipdffer-overview"') == len(table)
+       and t.endswith(other_addon),
+       "button sits right below the counts / Study Now table, above other add-ons")
+    ok("pycmd('ankipdffer:export')" in t and "<svg" in t, "button sends the export command, crisp SVG icon")
+    ok('tabindex="-1"' in t and 'onmousedown="event.preventDefault()"' in t,
+       "button never takes focus, so Enter keeps starting Study Now")
+    ok("%" not in mod._overview_button_html(), "no '%' (Anki fills the deck page with %-formatting)")
+    ok(all(not d["btn_overview_pdf"].endswith(("…", "...")) for d in mod._EXTRA_STRINGS.values()),
+       "button label has no ellipsis in any language")
+    ok(".pdffer-btn{" in t and "border-radius:5px" in t and ".night-mode #ankipdffer-overview" in t,
+       "OS X push-button style with a dark variant")
+    content = SimpleNamespace(table="<table><tr><td>reshaped by another add-on</td></tr></table>")
+    mod._on_overview_content(None, content)
+    ok(content.table.endswith("</button></div>"), "unknown layouts get the button below the table")
+
+    mod._set_overview_button(False)
+    content = SimpleNamespace(table=table)
+    mod._on_overview_content(None, content)
+    ok(content.table == table, "switched off in Settings: deck screen untouched")
+    mod._set_overview_button(True)
+    ok("overview_button" in mod.MACHINE_KEYS, "button switch is not part of option presets")
+
+    ok(mod._on_js_message((False, None), "study", None) == (False, None), "other bridge commands untouched")
+    col.decks.select(col.decks.id_for_name("Pharma::Cardio"))
+    handled = mod._on_js_message((False, None), mod.OVERVIEW_CMD, None)
+    ok(handled == (True, None) and mod._dlg is not None and mod._dlg._sel() == "Pharma::Cardio",
+       "button opens the window on the deck being viewed")
+    col.decks.select(col.decks.id_for_name("Lab::Long"))
+    mod._on_js_message((False, None), mod.OVERVIEW_CMD, None)
+    ok(mod._dlg._sel() == "Lab::Long", "an open window switches to the newly viewed deck")
+
+    # opening must build the field table once, not once per combo-box signal
+    loads = []
+    original = mod.PDFExportDialog._load_fields
+    mod.PDFExportDialog._load_fields = lambda self: (loads.append(1), original(self))[1]
+    try:
+        mod._dlg.hide()
+        col.decks.select(col.decks.id_for_name("Pharma::Cardio"))
+        mod._on_js_message((False, None), mod.OVERVIEW_CMD, None)
+        ok(len(loads) == 1 and mod._dlg._sel() == "Pharma::Cardio",
+           "reopening on another deck builds the field table once ({}x)".format(len(loads)))
+        mod._dlg.close()
+        mod._dlg = None
+        loads.clear()
+        mod._on_js_message((False, None), mod.OVERVIEW_CMD, None)
+        ok(len(loads) == 1, "a new window builds the field table once ({}x)".format(len(loads)))
+    finally:
+        mod.PDFExportDialog._load_fields = original
+    mod._dlg.close()
     shutil.rmtree(stage, ignore_errors=True)
 
 
@@ -443,6 +528,7 @@ def run_checks(col, load_addon, pick):
     check_responsive(col, load_addon, pick)
     check_notetypes(col, load_addon, pick)
     check_141(col, load_addon, pick)
+    check_overview_button(col, load_addon, pick)
     print("\n{} check(s) failed".format(len(FAILS)) if FAILS else "\nall checks passed")
     for f in FAILS:
         print("  - " + f)

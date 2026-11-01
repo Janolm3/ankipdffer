@@ -60,6 +60,8 @@ Tools → AnkiPdffer → Open export dialog…
 
 Pick the deck, adjust the tabs (Content, Appearance, Page, Fields, Settings), then Preview PDF or Export PDF.
 
+Or open a deck and click **Export to PDF** below *Study Now*.
+
 Quick export of the current deck to Legacy HTML:
 
 ```
