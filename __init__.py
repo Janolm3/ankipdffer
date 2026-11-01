@@ -1288,15 +1288,12 @@ class PDFExportDialog(QDialog):
         page = QWidget()
         page.setObjectName("Page")
         outer = QHBoxLayout(page)
-        outer.setContentsMargins(20, 8, 20, 16)
-        # set by _align_forms so the control column hangs from the Content tab's axis;
-        # Preferred: it gives way when the window is too narrow
-        page._lead = QSpacerItem(0, 0, QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
-        outer.addItem(page._lead)
+        outer.setContentsMargins(20, 12, 20, 12)
+        outer.addStretch(1)
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        # vertically centred; horizontally placed on the tab bar's axis by _align_forms
-        form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        # centred both ways, with equal margins on every side
+        form.setFormAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
         form.setHorizontalSpacing(10)
@@ -1314,7 +1311,8 @@ class PDFExportDialog(QDialog):
 
         Segmented controls and pop-up menus that fall a few points short of the widest control
         get its width (measured once the stylesheet applies), so the column has one right edge.
-        The form is centred vertically and hung from the tab bar's axis (see _align_forms).
+        The form is centred both ways (see _form_page); on the Content tab the control column
+        is then widened so its left edge meets the Content tab's axis (see _align_content_axis).
         """
         try:
             form = page._form
@@ -2075,69 +2073,51 @@ class PDFExportDialog(QDialog):
     def _queue_align(self):
         if not getattr(self, "_align_queued", False):
             self._align_queued = True
-            QTimer.singleShot(0, self._align_forms)
+            QTimer.singleShot(0, self._align_content_axis)
 
-    def _form_pages(self):
-        pages = []
-        for i in range(self.stack.count()):
-            w = self.stack.widget(i)
-            page = w.widget() if isinstance(w, QScrollArea) else w
-            if page is not None and hasattr(page, "_form"):
-                pages.append(page)
-        return pages
+    def _align_content_axis(self):
+        """Content tab: the vertical line through the middle of the "Content" tab button is the
+        left edge of the control column (the "Fields" box), while the form stays centred with
+        equal margins left and right. Both hold when the controls are as wide as
 
-    def _align_forms(self):
-        """One vertical axis ties the tab bar to the forms: the middle of the "Content" tab runs
-        through the middle of the Source control's first segment ("Fields"). Every form tab
-        hangs its control column from the same line, so nothing jumps when switching tabs; when
-        a page is too narrow the form moves left only as far as it must."""
+            2 x (panel centre - tab axis) + gap + label column
+
+        which does not depend on the window size (the tab bar and the form share the panel's
+        centre). A narrow window caps the width; the form then stays centred."""
         self._align_queued = False
         try:
             tab = self.tabs.buttons[0]
             axis = tab.mapTo(self.tab_box, QPoint(tab.width() // 2, 0)).x()
-            seg = self.render_radio.buttons[0]
-            if seg.width() > 0:  # measured once the Content page has been laid out
-                self._seg_offset = seg.mapTo(self.render_radio, QPoint(seg.width() // 2, 0)).x()
-            offset = getattr(self, "_seg_offset", None)
-            if offset is None:
-                offset = self.render_radio.sizeHint().width() // 4
-            column = axis - offset  # left edge of every control column, in tab box coordinates
-            stack_x = self.stack.mapTo(self.tab_box, QPoint(0, 0)).x()
-            scroll = self.stack.currentWidget()
-            stack_w = scroll.viewport().width() if isinstance(scroll, QScrollArea) else self.stack.width()
-            pages = []
-            for page in self._form_pages():
-                form = page._form
-                label_w = field_w = 0
-                for row in range(form.rowCount()):
-                    label = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
-                    field = form.itemAt(row, QFormLayout.ItemRole.FieldRole)
-                    if label is None or field is None:
-                        continue
-                    label_w = max(label_w, label.sizeHint().width())
-                    field_w = max(field_w, field.sizeHint().width())
-                # hidden tabs keep a stale geometry: measure every page by the shared stack
-                left, _, right, _ = page.layout().getContentsMargins()
-                origin = stack_x + left
-                labels_end = origin + label_w + form.horizontalSpacing()  # column can't start sooner
-                fits_until = origin + stack_w - left - right - field_w  # nor later than this
-                pages.append((page, labels_end, fits_until))
-            if not pages:
+            scroll = self.stack.widget(0)
+            page = scroll.widget() if isinstance(scroll, QScrollArea) else scroll
+            form = page._form
+            viewport = scroll.viewport() if isinstance(scroll, QScrollArea) else page
+            centre = viewport.mapTo(self.tab_box, QPoint(viewport.width() // 2, 0)).x()
+            label_w = 0
+            controls = []
+            for row in range(form.rowCount()):
+                label = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
+                field = form.itemAt(row, QFormLayout.ItemRole.FieldRole)
+                if label is None or field is None:
+                    continue
+                label_w = max(label_w, label.sizeHint().width())
+                w = field.widget()
+                if isinstance(w, QComboBox) or isinstance(w, macui.SegmentedControl):
+                    controls.append(w)
+            if not controls:
                 return
-            # narrow window: every tab moves back to the same column, so nothing jumps
-            column = min([column] + [fits for _, _, fits in pages])
-            for page, labels_end, fits_until in pages:
-                col = max(labels_end, min(column, fits_until))
-                lead = int(max(0, col - labels_end))
-                if page._lead.sizeHint().width() != lead:
-                    page._lead.changeSize(lead, 0, QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
-                    page.layout().invalidate()
+            natural = max(max(w.sizeHint().width(), getattr(w, "_natural_w", 0)) for w in controls)
+            for w in controls:
+                w._natural_w = max(getattr(w, "_natural_w", 0), w.sizeHint().width())
+            left, _, right, _ = page.layout().getContentsMargins()
+            room = viewport.width() - left - right - label_w - form.horizontalSpacing()
+            width = 2 * (centre - axis) + form.horizontalSpacing() + label_w
+            width = int(max(natural, min(width, room)))
+            for w in controls:
+                if w.width() != width or w.minimumWidth() != width:
+                    w.setFixedWidth(width)
         except (AttributeError, IndexError, RuntimeError):
             pass
-
-    def moveEvent(self, event):
-        super().moveEvent(event)
-        self._position_busy_overlay()
 
     # ------------------------------------------------------------------ slots
     def _on_width_radio_changed(self, idx, checked):

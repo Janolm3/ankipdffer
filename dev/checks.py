@@ -830,30 +830,47 @@ def check_143(col, load_addon, pick):
     builder.reject()
     dlg.close()
 
-    # one vertical axis: middle of the Content tab = middle of the "Fields" segment, every form
-    # tab hangs its controls from the same column, at any reasonable window width
+    # Content tab: the line through the middle of the "Content" tab is the left edge of the
+    # "Fields" box; every form tab is centred with equal margins left and right
     from PyQt6.QtCore import QPoint
+    from PyQt6.QtWidgets import QFormLayout
+
+    def margins(win, idx):
+        scroll = win.stack.widget(idx)
+        form, vp = scroll.widget()._form, scroll.viewport()
+        lefts, rights = [], []
+        for row in range(form.rowCount()):
+            label = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
+            field = form.itemAt(row, QFormLayout.ItemRole.FieldRole)
+            if label is not None and label.widget() is not None and label.widget().isVisible():
+                w = label.widget()
+                lefts.append(w.mapTo(vp, QPoint(w.width() - w.sizeHint().width(), 0)).x())
+            if field is not None and field.widget() is not None and field.widget().isVisible():
+                w = field.widget()
+                rights.append(w.mapTo(vp, QPoint(w.width(), 0)).x())
+        return min(lefts), vp.width() - max(rights)
+
     for size in ((820, 560), (1300, 760)):
         win = mod.PDFExportDialog(mw)
         win.resize(*size)
         win.show()
-        for _ in range(4):
+        for _ in range(5):
             app.processEvents()
         win.tabs.setCurrentIndex(0)
-        for _ in range(4):
+        for _ in range(5):
             app.processEvents()
-        tab, seg = win.tabs.buttons[0], win.render_radio.buttons[0]
-        diff = (seg.mapToGlobal(QPoint(seg.width() // 2, 0)).x()
+        tab = win.tabs.buttons[0]
+        diff = (win.render_radio.mapToGlobal(QPoint(0, 0)).x()
                 - tab.mapToGlobal(QPoint(tab.width() // 2, 0)).x())
-        lefts = set()
-        for i, w in ((0, win.qa_combo), (1, win.font_combo), (2, win.page_combo), (4, win.lang_combo)):
+        sides = []
+        for i in (0, 1, 2, 4):
             win.tabs.setCurrentIndex(i)
-            for _ in range(4):
+            for _ in range(5):
                 app.processEvents()
-            lefts.add(w.mapToGlobal(QPoint(0, 0)).x())
-        ok(abs(diff) <= 1 and len(lefts) == 1,
-           "{}x{}: Content tab and Fields segment share one axis ({:+d}), one control column {}".format(
-               size[0], size[1], diff, sorted(lefts)))
+            sides.append(margins(win, i))
+        ok(abs(diff) <= 1 and all(abs(l - r) <= 2 for l, r in sides),
+           "{}x{}: Fields box starts on the Content tab's axis ({:+d}), forms centred {}".format(
+               size[0], size[1], diff, sides))
         win.close()
     shutil.rmtree(stage, ignore_errors=True)
 

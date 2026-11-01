@@ -5,7 +5,7 @@ All notable changes to the **AnkiPdffer Dev** add-on will be documented in this 
 ## [Unreleased]
 
 ### Changed
-- Option tabs hang from one vertical axis: the middle of the *Content* tab runs through the middle of the Source control's *Fields* segment, and every form tab starts its controls in that same column (forms stay vertically centred). In a narrow window the forms move left together, only as far as needed.
+- Option tabs are centred with equal margins on both sides (and vertically). On the *Content* tab the line through the middle of the *Content* tab button is the left edge of the *Fields* box: the control column is sized for that, independently of the window size.
 
 ### Fixed
 - Filter builder: the pop-up lists were narrower than their buttons on macOS, which elided entries (choosing *any* made *all* disappear).
