@@ -95,7 +95,9 @@ def check_html(col, load_addon, pick):
     html, _ = build(mod, dlg, pick, 0, "pdf", {"font_combo.setCurrentIndex": 4})
     ok("fonts.googleapis.com" not in html, "Google Fonts import skipped for non-Inter stacks")
     html, _ = build(mod, dlg, pick, 0, "pdf")
-    ok("fonts.googleapis.com" in html, "Google Fonts import kept for the default (Inter) stack")
+    ok("fonts.googleapis.com" not in html, "System font does not fetch Google Fonts (works offline)")
+    html, _ = build(mod, dlg, pick, 0, "pdf", {"font_combo.setCurrentIndex": 1})
+    ok("fonts.googleapis.com" in html, "Inter font imports Google Fonts")
 
     dlg._apply_settings(mod.DEFAULT_SETTINGS)
     pick(dlg, "Pharma::Cardio")
@@ -349,6 +351,81 @@ def check_notetypes(col, load_addon, pick):
     shutil.rmtree(stage, ignore_errors=True)
 
 
+def check_141(col, load_addon, pick):
+    print("1.4.1: pagination, links, strip, preview, engine, loader")
+    app, mw, mod, stage = load_addon(col)
+    dlg = mod.PDFExportDialog(mw)
+
+    def html_for(deck, **tweaks):
+        dlg._apply_settings(mod.DEFAULT_SETTINGS)
+        pick(dlg, deck)
+        for dotted, val in tweaks.items():
+            obj = dlg
+            *path, setter = dotted.split("__")
+            for part in path:
+                obj = getattr(obj, part)
+            getattr(obj, setter)(val)
+        mod.logger.start("check")
+        return dlg._build_html(mode="pdf")[0]
+
+    html = html_for("Lab::Long", layout_radio__setCurrentIndex=1)
+    uids = re.findall(r'<div class="card[^"]*"[^>]*data-u="(\d+)"', html)
+    ok(len(uids) == 60 and len(set(uids)) == 60, "every card carries a unique id for the layout pass")
+    ok(dlg._last_layout == {"gap_ratio": 0.12, "min_split": 0.25}, "compact: tight gap limit")
+    ok(".fb{" in html and "break-inside:avoid" in html.split(".fb{", 1)[1][:120], "fields never split")
+    ok(".sec-div,.fl{break-after:avoid" in html, "header/divider/label stay with what follows")
+    ok("box-decoration-break:clone" in html, "split cards keep their frame on both pages")
+    ok(".fv a,.rs a{color:" in html and "text-decoration:none" in html, "links styled (no default blue underline)")
+    ok("<details open" in html and "summary" in html, "<details> exported open, summary styled")
+    ok("@bottom-right{content:\"AnkiPdffer" in html and "Compact" in html.split("@bottom-right", 1)[1][:160],
+       "running footer names the generator")
+    ok(".fv{font-size:inherit;orphans" in html and "overflow:hidden}" not in html.split(".fv{", 1)[1][:80],
+       "fields no longer clip overflowing content")
+
+    html = html_for("Lab::Long", layout_radio__setCurrentIndex=0)
+    ok(dlg._last_layout["gap_ratio"] == 0.33, "standard: cards kept whole unless a third of a page is lost")
+    html = html_for("Pharma::Cardio", qa_combo__setCurrentIndex=1)
+    ok('data-keep="1"' in html, "forced breaks (answer key) are never back-filled")
+
+    html = html_for("Lab::Long", strip_html_cb__setChecked=True)
+    first = html.split('class="fl">Rationale</div>', 1)[1][:600]
+    ok("<br>" in first and "<details" not in first, "strip formatting keeps line breaks")
+
+    # Preview = the real PDF through the export path (no HTML mock-up)
+    seen = {}
+    dlg._start_external_export = lambda path: seen.update(path=path, html=open(dlg.temp_html_path).read())
+    dlg._apply_settings(mod.DEFAULT_SETTINGS)
+    pick(dlg, "Pharma::Cardio")
+    dlg._on_preview()
+    ok(seen.get("path", "").endswith(".pdf") and "AnkiPdffer-preview" in seen.get("path", ""),
+       "Preview renders a temporary PDF")
+    ok("page-break-marker" not in seen.get("html", "x") and "@page{size:" in seen.get("html", ""),
+       "Preview uses the same HTML as Export")
+    ok(dlg._preview_pending, "Preview opens without the 'saved' dialog")
+    dlg._reset()
+
+    # loader: a floating HUD that stays in front while busy
+    dlg.show()
+    dlg._begin_busy("x")
+    ok(dlg.busy_hud.isVisible() and dlg.busy_hud.isWindow(), "loader is a floating window while busy")
+    ok(bool(dlg.busy_hud.windowFlags() & mod.Qt.WindowType.WindowStaysOnTopHint), "loader stays on top")
+    v0 = dlg._busy_val
+    for _ in range(50):
+        dlg._animate_busy()
+    ok(v0 < dlg._busy_val <= 95, "progress only grows ({} -> {:.0f})".format(v0, dlg._busy_val))
+    dlg._end_busy(force=True)
+    ok(not dlg.busy_hud.isVisible(), "loader hidden when done")
+
+    # engine probe (the real one: imports WeasyPrint with the bundled vendor dir)
+    report = dlg._engine_probe()
+    ok(set(report) >= {"macos", "brew", "python", "pango", "engine"}, "engine probe reports every part")
+    dialog = mod.EngineSetupDialog(dlg)
+    ok("brew install python@3.14 pango" in dialog.commands()[1], "setup guide offers the brew command")
+    dialog.reject()
+    dlg.close()
+    shutil.rmtree(stage, ignore_errors=True)
+
+
 def run_checks(col, load_addon, pick):
     check_html(col, load_addon, pick)
     check_store(col, load_addon, pick)
@@ -356,6 +433,7 @@ def run_checks(col, load_addon, pick):
     check_translations(col, load_addon, pick)
     check_responsive(col, load_addon, pick)
     check_notetypes(col, load_addon, pick)
+    check_141(col, load_addon, pick)
     print("\n{} check(s) failed".format(len(FAILS)) if FAILS else "\nall checks passed")
     for f in FAILS:
         print("  - " + f)

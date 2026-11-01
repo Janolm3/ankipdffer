@@ -86,7 +86,69 @@ def build_collection(tmp):
                   "{{c2::image-occlusion:rect:left=.55:top=.5:width=.3:height=.3:oi=1}}",
         Header="Heart", Back_Extra="Two chambers hidden")
     add(weird, deck, **{"Q <1>": "weird q", "A & B": "weird a"})
+    build_lab(col, add)
     return col
+
+
+def build_lab(col, add):
+    """Lab::Long: multiple-choice notes with long, uneven fields (pagination / splitting).
+    Lab::Images: awkward image sizes and markup (cropping)."""
+    import random
+    media = col.media.dir()
+    _make_png(os.path.join(media, "wide.png"), "#ffe2c6", "wide 2400x800", (2400, 800))
+    _make_png(os.path.join(media, "tall.png"), "#d9f2e6", "tall 600x2400", (600, 2400))
+    _make_png(os.path.join(media, "photo.png"), "#e3e0ff", "photo 1600x1200", (1600, 1200))
+
+    models = col.models
+    mcq = models.new("MCQ")
+    names = ["Question", "Catalogue", "A", "B", "C", "D", "E", "Answer", "Rationale", "Review"]
+    for name in names:
+        models.add_field(mcq, models.new_field(name))
+    tmpl = models.new_template("Card 1")
+    tmpl["qfmt"] = "{{Question}}"
+    tmpl["afmt"] = "{{FrontSide}}<hr id=answer>{{Answer}}<br>{{Rationale}}"
+    models.add_template(mcq, tmpl)
+    models.add(mcq)
+    mcq = models.by_name("MCQ")
+
+    rnd = random.Random(7)
+    words = ("patient fever surgery imaging abdominal wall chronic acute pressure drainage "
+             "infection dressing laparoscopy anastomosis bleeding recovery assessment").split()
+
+    def sentence(n):
+        return " ".join(rnd.choice(words) for _ in range(n)).capitalize() + "."
+
+    long_deck = col.decks.id("Lab::Long")
+    for i in range(60):
+        n_opts = rnd.choice([2, 3, 4, 5])
+        fields = {"Question": "{}. {}".format(i + 1, sentence(rnd.randint(6, 30))),
+                  "Catalogue": "2025/26 \u00b7 Lab source"}
+        for opt in "ABCDE"[:n_opts]:
+            fields[opt] = sentence(rnd.randint(2, 18))
+        fields["Answer"] = rnd.choice("ABCDE"[:n_opts])
+        fields["Rationale"] = (
+            '<details class="src"><summary>Source</summary>'
+            '<a href="https://example.org/doc/{0}">Lab handbook, chapter {0}</a><br>'
+            'Pages {1}.</details>'.format(i % 9 + 1, ", ".join(str(rnd.randint(1, 300)) for _ in range(4)))
+            + "<br>".join(sentence(rnd.randint(8, 24)) for _ in range(rnd.randint(1, 6))))
+        if rnd.random() < 0.6:
+            fields["Review"] = "<b>Review</b><br>" + "<br>".join(
+                sentence(rnd.randint(10, 30)) for _ in range(rnd.randint(1, 8)))
+        add(mcq, long_deck, **fields)
+
+    img_deck = col.decks.id("Lab::Images")
+    basic = models.by_name("Basic")
+    cases = [
+        ("Wide image", '<img src="wide.png">'),
+        ("Tall image", '<img src="tall.png">'),
+        ("Width attribute", '<img src="photo.png" width="1400" height="1050">'),
+        ("Inline style", '<div style="width:1200px"><img src="photo.png" style="width:1100px;height:825px"></div>'),
+        ("Table of images", '<table><tr><td><img src="photo.png"></td><td><img src="wide.png"></td></tr></table>'),
+        ("Floated image", '<img src="photo.png" style="float:right;width:60%">' + "Text beside a float. " * 12),
+        ("Five images", "".join('<img src="photo.png">' for _ in range(5))),
+    ]
+    for front, back in cases:
+        add(basic, img_deck, Front=front, Back=back)
 
 
 def load_addon(col, dark=False):
@@ -205,16 +267,25 @@ def scenario_html(col):
 
 PDF_COMBOS = ["fields-pdf", "cards-pdf", "cards-pages-io-all", "fields-key-cloze-both", "fields-pagenum"]
 
+LAB_COMBOS = [
+    # name, deck, render, tweaks
+    ("lab-long-standard", "Lab::Long", 0, {"layout_radio.setCurrentIndex": 0}),
+    ("lab-long-compact", "Lab::Long", 0, {"layout_radio.setCurrentIndex": 1}),
+    ("lab-long-compact-strip", "Lab::Long", 0, {"layout_radio.setCurrentIndex": 1, "strip_html_cb.setChecked": True}),
+    ("lab-images-standard", "Lab::Images", 0, {"layout_radio.setCurrentIndex": 0}),
+    ("lab-images-compact", "Lab::Images", 0, {"layout_radio.setCurrentIndex": 1}),
+    ("lab-images-cards", "Lab::Images", 1, {}),
+]
+
 
 def scenario_pdf(col):
     """Real WeasyPrint export of a few layouts (same engine Anki uses)."""
     app, mw, mod, stage = load_addon(col)
     dlg = mod.PDFExportDialog(mw)
-    for name, render, mode, tweaks in COMBOS:
-        if name not in PDF_COMBOS:
-            continue
+    jobs = [(n, "Pharma::Cardio", r, t) for n, r, m, t in COMBOS if n in PDF_COMBOS] + LAB_COMBOS
+    for name, deck, render, tweaks in jobs:
         dlg._apply_settings(mod.DEFAULT_SETTINGS)
-        pick(dlg, "Pharma::Cardio")
+        pick(dlg, deck)
         dlg.render_radio.setCurrentIndex(render)
         for dotted, val in tweaks.items():
             obj = dlg
@@ -229,7 +300,8 @@ def scenario_pdf(col):
         pdf = os.path.join(OUT, "export-{}.pdf".format(name))
         logs = []
         ok = dlg._export_pdf_via_weasyprint(pdf, hp, logs, dlg._font_debug_snapshot())
-        print("pdf", os.path.basename(pdf), "ok" if ok else "FAILED", *[l for l in logs if "rror" in l or "xit" in l][:3])
+        print("pdf", os.path.basename(pdf), "ok" if ok else "FAILED",
+              *[l for l in logs if "rror" in l or "xit" in l or l.startswith("Layout:")][:3])
         if ok and shutil.which("pdftoppm"):
             import subprocess
             subprocess.run(["pdftoppm", "-r", "60", "-png", pdf,

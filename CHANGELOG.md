@@ -2,6 +2,27 @@
 
 All notable changes to the **AnkiPdffer Dev** add-on will be documented in this file.
 
+## [1.4.1] - 2026-11-01
+
+### Changed
+- **Preview PDF is the real PDF**: it is rendered with the same engine, settings and layout pass as *Export PDF* into a temporary file and opened, so what you preview is exactly what you get. (It used to be an HTML mock-up paginated by estimates.)
+- **Smarter pagination**: after a first render, AnkiPdffer measures every page and lets a card continue on the next page only where that clearly saves space — never inside a field, never leaving a lone label or question, and never just to leave an empty frame. *Compact* fills pages (up to 12 % of a page may stay empty); *Standard* keeps cards whole unless a third of a page would be lost. On a 60-card test deck: compact 50 → 45 pages, standard 56 → 53 pages, with far less empty space and no mid-field cuts. The export log reports pages, split cards and empty space.
+- **Loader stays in front**: progress is shown in a small floating panel above the export window (and Anki) until the job finishes, and the bar only moves forward.
+- Deck and subdeck pickers are wider, show more entries, and their lists widen to fit long deck names.
+
+### Added
+- **PDF engine setup** in Settings: shows whether WeasyPrint is ready and opens a guide that checks Homebrew, Python 3.14 and Pango and installs what is missing with one click (or opens Terminal with the official Homebrew installer when Homebrew itself is missing).
+- A subtle line in the page margin names what made the PDF, e.g. *AnkiPdffer 1.4.1 · Fields · Compact*.
+
+### Fixed
+- Links used the browser's default blue underline; they now match the theme.
+- Images, tables and floated content could be clipped by field and card boxes; images are no longer cut and never split across pages.
+- Long cards could split in the middle of a field, leave a field label alone at the bottom of a page, and lose their frame on one side of the split.
+- *Strip Anki formatting* merged every line of a field into one paragraph; line breaks and list items are kept now.
+- Collapsed `<details>` blocks (e.g. source notes) were hidden in the fallback renderer; they are exported open with a small caption.
+- The System font fetched Google Fonts on every export; only the Inter font does now, so exports work offline.
+- The search field's magnifier was blurry on Retina displays.
+
 ## [1.4.0] - 2026-11-01
 
 ### Added
