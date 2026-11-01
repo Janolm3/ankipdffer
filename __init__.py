@@ -431,7 +431,7 @@ _LAYOUT_PASS_SCRIPT = """
 
         doc = render(source)
         marked, blocked, motive, renders = set(), set(), {}, 1
-        while ratio > 0 and renders <= 4:
+        while ratio > 0 and renders < int(layout.get('max_renders') or 3):
             pages = pages_of(doc)
             split, _ = stats(pages)
             bad = wasted_frames(pages, split, motive) & marked
