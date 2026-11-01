@@ -317,6 +317,13 @@ class _Combo(QComboBox):
         macui.round_popup(self, self._pal)
         return self
 
+    def showPopup(self):
+        # pop-ups sized to their contents got a list narrower than the button on macOS, which
+        # elided the entries ("all" vanished from the Match pop-up)
+        view = self.view()
+        view.setMinimumWidth(max(self.width(), view.sizeHintForColumn(0) + 32))
+        super().showPopup()
+
 
 class _Row(QWidget):
     """[property] [field] [condition] [value ...]  (−) (+)"""

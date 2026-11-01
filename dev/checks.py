@@ -821,8 +821,57 @@ def check_143(col, load_addon, pick):
     builder.remove_row(builder.rows[1])
     ok(len(builder.rows) == 2, "− removes it")
     builder.rows[1].value.setCurrentIndex(0) if hasattr(builder.rows[1].value, "setCurrentIndex") else None
+    builder.match.setCurrentIndex(1)
+    builder.match.showPopup()
+    app.processEvents()
+    ok(builder.match.view().minimumWidth() >= builder.match.width(),
+       "builder pop-up lists are at least as wide as their button (entries were elided on macOS)")
+    builder.match.hidePopup()
     builder.reject()
     dlg.close()
+
+    # Content tab: the line through the middle of the "Content" tab is the left edge of the
+    # "Fields" box; every form tab is centred with equal margins left and right
+    from PyQt6.QtCore import QPoint
+    from PyQt6.QtWidgets import QFormLayout
+
+    def margins(win, idx):
+        scroll = win.stack.widget(idx)
+        form, vp = scroll.widget()._form, scroll.viewport()
+        lefts, rights = [], []
+        for row in range(form.rowCount()):
+            label = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
+            field = form.itemAt(row, QFormLayout.ItemRole.FieldRole)
+            if label is not None and label.widget() is not None and label.widget().isVisible():
+                w = label.widget()
+                lefts.append(w.mapTo(vp, QPoint(w.width() - w.sizeHint().width(), 0)).x())
+            if field is not None and field.widget() is not None and field.widget().isVisible():
+                w = field.widget()
+                rights.append(w.mapTo(vp, QPoint(w.width(), 0)).x())
+        return min(lefts), vp.width() - max(rights)
+
+    for size in ((820, 560), (1300, 760)):
+        win = mod.PDFExportDialog(mw)
+        win.resize(*size)
+        win.show()
+        for _ in range(5):
+            app.processEvents()
+        win.tabs.setCurrentIndex(0)
+        for _ in range(5):
+            app.processEvents()
+        tab = win.tabs.buttons[0]
+        diff = (win.render_radio.mapToGlobal(QPoint(0, 0)).x()
+                - tab.mapToGlobal(QPoint(tab.width() // 2, 0)).x())
+        sides = []
+        for i in (0, 1, 2, 4):
+            win.tabs.setCurrentIndex(i)
+            for _ in range(5):
+                app.processEvents()
+            sides.append(margins(win, i))
+        ok(abs(diff) <= 1 and all(abs(l - r) <= 2 for l, r in sides),
+           "{}x{}: Fields box starts on the Content tab's axis ({:+d}), forms centred {}".format(
+               size[0], size[1], diff, sides))
+        win.close()
     shutil.rmtree(stage, ignore_errors=True)
 
 

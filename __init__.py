@@ -335,7 +335,7 @@ class ExportLogger:
 
 
 logger = ExportLogger()
-EXPORT_BUILD = "1.4.3-20261101"
+EXPORT_BUILD = "1.4.4-20261101"
 TOOL_NAME = "AnkiPdffer"
 # cloze answer colours: (string key, on light pages, on dark pages)
 CLOZE_COLORS = [
@@ -350,7 +350,7 @@ TOOL_URL = "https://ankiweb.net/shared/info/1987190048"
 TOOL_URL_DISPLAY = "ankiweb.net/shared/info/1987190048"
 
 
-def _addon_version(default="1.4.3"):
+def _addon_version(default="1.4.4"):
     try:
         manifest_path = os.path.join(os.path.dirname(__file__), "manifest.json")
         with open(manifest_path, "r", encoding="utf-8") as f:
@@ -1254,6 +1254,7 @@ class PDFExportDialog(QDialog):
         self.stack = self.tab_box.stack
         self.stack.currentChanged.connect(
             lambda i: i == self.stack.count() - 1 and self._engine_report is None and self._check_engine())
+        self.stack.currentChanged.connect(lambda *_: self._queue_align())
         body = QVBoxLayout()
         body.setContentsMargins(20, 14, 20, 18)
         self.tab_box.setMinimumHeight(300)
@@ -1287,11 +1288,11 @@ class PDFExportDialog(QDialog):
         page = QWidget()
         page.setObjectName("Page")
         outer = QHBoxLayout(page)
-        outer.setContentsMargins(20, 8, 20, 16)
+        outer.setContentsMargins(20, 12, 20, 12)
         outer.addStretch(1)
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        # centred both ways: the form sits in the middle of the tab at any window size
+        # centred both ways, with equal margins on every side
         form.setFormAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
@@ -1310,7 +1311,8 @@ class PDFExportDialog(QDialog):
 
         Segmented controls and pop-up menus that fall a few points short of the widest control
         get its width (measured once the stylesheet applies), so the column has one right edge.
-        The form itself is centred both ways in the tab (see _form_page).
+        The form is centred both ways (see _form_page); on the Content tab the control column
+        is then widened so its left edge meets the Content tab's axis (see _align_content_axis).
         """
         try:
             form = page._form
@@ -2061,10 +2063,61 @@ class PDFExportDialog(QDialog):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._position_busy_overlay()
+        self._queue_align()
 
-    def moveEvent(self, event):
-        super().moveEvent(event)
-        self._position_busy_overlay()
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._queue_align()
+
+    # ------------------------------------------------------------- form axis
+    def _queue_align(self):
+        if not getattr(self, "_align_queued", False):
+            self._align_queued = True
+            QTimer.singleShot(0, self._align_content_axis)
+
+    def _align_content_axis(self):
+        """Content tab: the vertical line through the middle of the "Content" tab button is the
+        left edge of the control column (the "Fields" box), while the form stays centred with
+        equal margins left and right. Both hold when the controls are as wide as
+
+            2 x (panel centre - tab axis) + gap + label column
+
+        which does not depend on the window size (the tab bar and the form share the panel's
+        centre). A narrow window caps the width; the form then stays centred."""
+        self._align_queued = False
+        try:
+            tab = self.tabs.buttons[0]
+            axis = tab.mapTo(self.tab_box, QPoint(tab.width() // 2, 0)).x()
+            scroll = self.stack.widget(0)
+            page = scroll.widget() if isinstance(scroll, QScrollArea) else scroll
+            form = page._form
+            viewport = scroll.viewport() if isinstance(scroll, QScrollArea) else page
+            centre = viewport.mapTo(self.tab_box, QPoint(viewport.width() // 2, 0)).x()
+            label_w = 0
+            controls = []
+            for row in range(form.rowCount()):
+                label = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
+                field = form.itemAt(row, QFormLayout.ItemRole.FieldRole)
+                if label is None or field is None:
+                    continue
+                label_w = max(label_w, label.sizeHint().width())
+                w = field.widget()
+                if isinstance(w, QComboBox) or isinstance(w, macui.SegmentedControl):
+                    controls.append(w)
+            if not controls:
+                return
+            natural = max(max(w.sizeHint().width(), getattr(w, "_natural_w", 0)) for w in controls)
+            for w in controls:
+                w._natural_w = max(getattr(w, "_natural_w", 0), w.sizeHint().width())
+            left, _, right, _ = page.layout().getContentsMargins()
+            room = viewport.width() - left - right - label_w - form.horizontalSpacing()
+            width = 2 * (centre - axis) + form.horizontalSpacing() + label_w
+            width = int(max(natural, min(width, room)))
+            for w in controls:
+                if w.width() != width or w.minimumWidth() != width:
+                    w.setFixedWidth(width)
+        except (AttributeError, IndexError, RuntimeError):
+            pass
 
     # ------------------------------------------------------------------ slots
     def _on_width_radio_changed(self, idx, checked):

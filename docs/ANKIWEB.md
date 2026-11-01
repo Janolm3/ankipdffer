@@ -8,6 +8,10 @@ Open source on GitHub (screenshots, full documentation, changelog):
 
 [Buy Me a Coffee](https://buymeacoffee.com/janolm)
 
+## New in 1.4.4
+
+- Option tabs are evenly centred; the filter builder's pop-up lists no longer hide entries on macOS.
+
 ## New in 1.4.3
 
 - **Filter builder** — quick filters in the search field and a rule editor with a live card count.
