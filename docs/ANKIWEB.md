@@ -5,6 +5,7 @@ AnkiPdffer turns flashcards into readable documents for printing, offline study,
 Open source on GitHub (screenshots, full documentation, changelog):
 
 [github.com/Janolm3/ankipdffer](https://github.com/Janolm3/ankipdffer)
+[https://buymeacoffee.com/janolm](Buy Me a Coffee)
 
 ## New in 1.4.0
 
@@ -77,5 +78,3 @@ Click any image in the exported HTML to open it fullscreen.
 
 - Anki 23.11+
 - PDF export uses the bundled WeasyPrint. On macOS it needs Python 3.14 and Pango (`brew install python@3.14 pango`); without them AnkiPdffer falls back to Anki's built-in PDF renderer. HTML export has no extra requirements.
-
-Thank you for all the reviews and suggestions — several of the 1.4.0 features came straight from them.
