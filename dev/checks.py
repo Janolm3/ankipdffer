@@ -383,6 +383,19 @@ def check_141(col, load_addon, pick):
        "running footer names the generator and the note type ({})".format(footer))
     ok(footer.startswith("AnkiPdffer 1.4.") and footer.split(" \u00b7 ")[1] == "WeasyPrint"
        and footer.split(" \u00b7 ")[2] == "Fields", "footer: version, engine, then render mode ({})".format(footer))
+    html_off, _ = build(mod, dlg, pick, 0, "pdf", {"export_info_cb.setChecked": False})
+    ok("@bottom-right" not in html_off and "__PDFFER_GENERATOR__" not in html_off
+       and "margin:15.00mm 15.00mm 15.00mm" in html_off,
+       "export info off: no bottom-right corner text, bottom margin back to the top margin")
+    html_on, _ = build(mod, dlg, pick, 0, "pdf", {"export_info_cb.setChecked": True, "top_margin_spin.setValue": 5})
+    ok("@bottom-right" in html_on and "margin:5.00mm 15.00mm 9.00mm" in html_on,
+       "export info on: corner text, with room for it under the cards")
+    html_land, _ = build(mod, dlg, pick, 0, "pdf", {"orient_radio.setCurrentIndex": 1})
+    ok("@page{size:A4 landscape;" in html_land and dlg._get_page_dims() == (297, 210)
+       and dlg.page_preview._p["size"] == (297, 210),
+       "landscape: @page turned, page size swapped for pagination and the preview")
+    dlg.orient_radio.setCurrentIndex(0)
+    ok(dlg._get_page_dims() == (210, 297) and dlg._page_css_size() == "A4", "portrait again")
     fb_html = dlg._build_html(mode="pdf_fallback")[0]
     ok(mod._addon_version() + " \u00b7 Qt WebEngine \u00b7 Fields" in fb_html, "Qt fallback footer names its engine")
     ok(".fv{font-size:inherit;orphans" in html and "overflow:hidden}" not in html.split(".fv{", 1)[1][:80],
@@ -870,7 +883,7 @@ def check_143(col, load_addon, pick):
     img = QImage(prev.size(), QImage.Format.Format_ARGB32)
     prev.render(img)
     keys = {k for _, k in prev._hits}
-    ok({"margin", "top", "padding", "gap", "lh", "img", "numbers", "page"} <= keys,
+    ok({"margin", "top", "padding", "gap", "lh", "img", "numbers", "info", "page"} <= keys,
        "page preview: every mark and label can be pointed at ({})".format(sorted(keys)))
     label = next(rect for rect, k in prev._hits if k == "lh")
     from PyQt6.QtCore import QPointF as _QPointF
@@ -891,7 +904,9 @@ def check_143(col, load_addon, pick):
     lone = mod.macui.PagePreview()  # outside the layout, so it takes any size it is given
     lone.set_params(**prev._p)
     clashes = []
-    for w, h in ((240, 250), (300, 330), (420, 520), (560, 760)):
+    for w, h, size in ((240, 250, (210, 297)), (300, 330, (210, 297)), (420, 520, (210, 297)),
+                       (560, 760, (210, 297)), (420, 330, (297, 210)), (640, 520, (297, 210))):
+        lone.set_params(**dict(prev._p, size=size))
         for focus, hover in ((None, None), ("padding", "lh"), ("gap", "padding"), ("lh", "gap")):
             lone.set_focus(focus)
             lone._hover_in = hover
@@ -906,7 +921,10 @@ def check_143(col, load_addon, pick):
                 for b in boxes[n + 1:]:
                     if a.adjusted(0, -2, 0, 2).intersects(b):
                         clashes.append((w, h, focus, hover))
-    ok(not clashes, "page preview: labels keep apart and off the sheet at every size {}".format(clashes[:4]))
+            margin_y, others = lone._lanes
+            if others and min(abs(margin_y - t) for t in others) < 4:
+                clashes.append((w, h, size, "margin mark runs along another leader"))
+    ok(len(lone._labels) == 8 and not clashes, "page preview: labels keep apart and off the sheet at every size {}".format(clashes[:4]))
     from PyQt6.QtGui import QImage
     img = QImage(prev.size(), QImage.Format.Format_ARGB32)
     prev.render(img)

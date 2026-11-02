@@ -6,6 +6,8 @@ All notable changes to the **AnkiPdffer Dev** add-on will be documented in this 
 
 ### Added
 - **Page preview**: the *Page* tab shows a to-scale sketch of a page next to its options — paper size, margins, card padding, gaps, line height, the image limit and page numbers (with the theme, font size, card width and card style from the other tabs). Dimension lines lead to labelled values beside the sheet. The option being edited is drawn strongly (tinted area, filled label) while the rest steps back; pointing at an option or at a mark on the sketch links the two, and clicking a mark jumps to its option. Labels keep a fixed distance from each other and highlighted areas never run together. The sketch grows and shrinks with the window.
+- **Page orientation**: *Page → Orientation* switches between portrait and landscape, for the PDF (WeasyPrint and the Qt fallback), Preview and the page sketch.
+- **Export info can be turned off**: *Page → Export info* hides the small line in the bottom-right corner of every PDF page (*AnkiPdffer version · engine · mode · note types*). Without it and without page numbers, the bottom margin equals the top margin.
 
 ### Changed
 - Option tabs: on *Content* and *Appearance* the control column runs from the line through the middle of the *Content* tab button to the line through the middle of *Settings*, with the labels to its left; the other forms are centred with equal margins. *Appearance*'s font row and width control share that column, and the custom width field appears under the width control.

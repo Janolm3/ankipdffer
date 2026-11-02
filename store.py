@@ -52,6 +52,8 @@ DEFAULT_SETTINGS = {
     "io_mode": 0,         # 0 all masks at once (one entry per note), 1 one card per mask
     "order": 0,           # 0 deck order, 1 creation date, 2 shuffle
     "page_numbers": False,
+    "orientation": 0,     # 0 portrait, 1 landscape
+    "export_info": True,  # version, engine, mode and note types in the PDF's bottom-right corner
     "tab": 0,             # last tab shown in the window
     "export_dir": "",     # folder of the last export ("" = Desktop)
     "overview_button": True,  # "Export to PDF" button on Anki's deck screen
