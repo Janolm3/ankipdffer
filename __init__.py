@@ -303,6 +303,46 @@ class NoScrollDoubleSpinBox(QDoubleSpinBox):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
 
+# Legacy HTML grid: runs of consecutive cards are packed into columns (at least 340 px wide),
+# each card going to the currently shortest column, so the page has no holes under short cards.
+# Widths are set first and heights read in one pass (one reflow), and the layout follows
+# window resizes, images loading and <details> opening. Print falls back to one column (CSS).
+_MASONRY_JS = (
+    "<script>(function(){"
+    "var root=document.querySelector('body.grid-mode .page-content');if(!root)return;"
+    "var G=__GAP__,MIN=340,boxes=[],cur=null;"
+    "Array.prototype.slice.call(root.children).forEach(function(el){"
+    "if(el.classList&&el.classList.contains('card')){"
+    "if(!cur){cur=document.createElement('div');cur.className='masonry';"
+    "root.insertBefore(cur,el);boxes.push(cur);}"
+    "cur.appendChild(el);}else{cur=null;}});"
+    "if(!boxes.length)return;"
+    "document.body.classList.add('masonry-on');"
+    "function lay(box){"
+    "var W=box.clientWidth,n=Math.max(1,Math.floor((W+G)/(MIN+G))),cw=(W-(n-1)*G)/n;"
+    "var cards=box.children,i,k,h=[],hs=[];"
+    "for(k=0;k<cards.length;k++)cards[k].style.width=cw+'px';"
+    "for(k=0;k<cards.length;k++)hs.push(cards[k].offsetHeight);"
+    "for(i=0;i<n;i++)h.push(0);"
+    "for(k=0;k<cards.length;k++){var j=0;"
+    "for(i=1;i<n;i++)if(h[i]<h[j]-0.5)j=i;"
+    "cards[k].style.left=(j*(cw+G))+'px';cards[k].style.top=h[j]+'px';h[j]+=hs[k]+G;}"
+    "box.style.height=Math.max(0,Math.max.apply(null,h)-G)+'px';}"
+    "var queued=false;"
+    "function all(){queued=false;boxes.forEach(lay);}"
+    "function later(){if(!queued){queued=true;requestAnimationFrame(all);}}"
+    "window.__pdfferMasonry=all;all();"
+    "window.addEventListener('resize',later);window.addEventListener('load',later);"
+    "document.addEventListener('toggle',later,true);"
+    "Array.prototype.forEach.call(root.querySelectorAll('img'),function(im){"
+    "if(!im.complete)im.addEventListener('load',later);});"
+    "if(document.fonts&&document.fonts.ready)document.fonts.ready.then(later);"
+    "if(window.ResizeObserver){var ro=new ResizeObserver(later);"
+    "boxes.forEach(function(b){Array.prototype.forEach.call(b.children,function(c){ro.observe(c);});});}"
+    "})();</script>"
+)
+
+
 class ExportLogger:
     def __init__(self):
         self.entries = []
@@ -3170,8 +3210,11 @@ class PDFExportDialog(QDialog):
             pass
         QApplication.processEvents()
 
-    def _bring_to_front(self):
-        QTimer.singleShot(300, lambda: (self.raise_(), self.activateWindow()))
+    def _flash_status(self, text, tip=""):
+        """A note in the footer for a few seconds, then the card count again."""
+        self._set_count(text, False)
+        self.count_label.setToolTip(tip)
+        QTimer.singleShot(8000, self._update_count)
 
     def _save_debug_artifacts(self, mode, card_ids, html_output):
         if not self.debug_cb.isChecked():
@@ -3206,8 +3249,7 @@ class PDFExportDialog(QDialog):
                 f.write(html)
             logger.finish()
             self._save_debug_artifacts("legacy", card_ids, html)
-            QDesktopServices.openUrl(QUrl.fromLocalFile(p))
-            self._bring_to_front()
+            QDesktopServices.openUrl(QUrl.fromLocalFile(p))  # the browser stays in front
         except Exception as e:
             logger.error("Legacy", e)
             logger.finish()
@@ -3652,10 +3694,11 @@ class PDFExportDialog(QDialog):
         preview = getattr(self, "_preview_pending", False)
         self._preview_pending = False
         if success:
+            # the PDF viewer stays in front: no pop-up in Anki, the footer says where it went
             QDesktopServices.openUrl(QUrl.fromLocalFile(path))
-            self._bring_to_front()
             if not preview:
-                showInfo(_t("msg_pdf_saved").format(path))
+                self._flash_status(_t("msg_pdf_saved").format(os.path.basename(path)).replace("\n", " "),
+                                   path)
 
     def _save_debug_log(self):
         try:
@@ -4245,6 +4288,14 @@ class PDFExportDialog(QDialog):
                 "body.grid-mode .page-content h1.doc-title,"
                 "body.grid-mode .page-content .sub{{grid-column:1/-1}}"
                 "body.grid-mode .card{{margin-bottom:0!important}}"
+                # with JavaScript the grid becomes a masonry: each card goes to the shortest
+                # column, so short cards no longer leave holes under their row (_MASONRY_JS)
+                "body.grid-mode.masonry-on .page-content{{display:block}}"
+                "body.grid-mode .masonry{{position:relative;margin:0 0 {gap}px}}"
+                "body.grid-mode .masonry>.card{{position:absolute;box-sizing:border-box;margin:0!important}}"
+                "@media print{{body.grid-mode .masonry{{height:auto!important}}"
+                "body.grid-mode .masonry>.card{{position:static!important;width:auto!important;"
+                "margin:0 0 {gap}px!important}}}}"
                 "#lbx{{display:flex;position:fixed;inset:0;z-index:9999;"
                 "background:rgba(0,0,0,.93);align-items:center;"
                 "justify-content:center;overflow:hidden;"
@@ -5050,6 +5101,8 @@ class PDFExportDialog(QDialog):
                 "});"
                 "})();</script>"
             )
+            if grid_mode:
+                html.append(_MASONRY_JS.replace("__GAP__", str(int(card_gap))))
 
         html.append("</body></html>")
         result = "".join(html)

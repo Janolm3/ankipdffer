@@ -998,6 +998,67 @@ def check_143(col, load_addon, pick):
     shutil.rmtree(stage, ignore_errors=True)
 
 
+def check_legacy_grid(col, load_addon, pick):
+    print("Legacy HTML grid: masonry")
+    app, mw, mod, stage = load_addon(col)
+    from PyQt6.QtCore import QEventLoop, QTimer, QUrl
+    from PyQt6.QtWebEngineCore import QWebEnginePage
+    dlg = mod.PDFExportDialog(mw)
+    dlg._apply_settings(mod.DEFAULT_SETTINGS)
+    pick(dlg, "Lab::Long")
+    dlg.grid_cb.setChecked(True)
+    html, _ = dlg._build_html(mode="legacy")
+    ok("masonry-on" in html and "ResizeObserver" in html, "grid export carries the masonry script")
+    path = os.path.join(stage, "grid.html")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(html)
+
+    # a page without a view (a shown QWebEngineView crashes offscreen): the content gets an
+    # explicit width and the layout is run directly
+    probe = ("(function(W){var pc=document.querySelector('.page-content');pc.style.width=W+'px';"
+             "pc.style.boxSizing='border-box';window.__pdfferMasonry();var out=[];"
+             "document.querySelectorAll('.masonry>.card').forEach(function(c){"
+             "var r=c.getBoundingClientRect();out.push([r.left,r.top,r.width,r.height]);});"
+             "return JSON.stringify({cards:out,on:document.body.classList.contains('masonry-on'),"
+             "n:document.querySelectorAll('.card').length});})(%d)")
+    page = QWebEnginePage()
+    loop = QEventLoop()
+    page.loadFinished.connect(lambda *_: QTimer.singleShot(300, loop.quit))
+    QTimer.singleShot(15000, loop.quit)
+    page.load(QUrl.fromLocalFile(path))
+    loop.exec()
+    results = {}
+    for width in (1300, 760):
+        got = {}
+        loop2 = QEventLoop()
+        page.runJavaScript(probe % width, lambda v: (got.setdefault("v", v), loop2.quit()))
+        QTimer.singleShot(5000, loop2.quit)
+        loop2.exec()
+        results[width] = json.loads(got.get("v") or "{}")
+    page.deleteLater()
+    gap = int(dlg.gap_spin.value())
+    for width, r in results.items():
+        cards = r.get("cards", [])
+        lefts = sorted({round(c[0]) for c in cards})
+        overlaps = [(a, b) for i, a in enumerate(cards) for b in cards[i + 1:]
+                    if a[0] < b[0] + b[2] - 1 and b[0] < a[0] + a[2] - 1
+                    and a[1] < b[1] + b[3] - 1 and b[1] < a[1] + a[3] - 1]
+        # in every column the next card starts exactly one gap below the previous one
+        holes = []
+        for x in lefts:
+            col = sorted((c for c in cards if round(c[0]) == x), key=lambda c: c[1])
+            holes += [round(b[1] - (a[1] + a[3]) - gap) for a, b in zip(col, col[1:])
+                      if abs(b[1] - (a[1] + a[3]) - gap) > 1]
+        ok(r.get("on") and len(cards) == r.get("n") and len(cards) >= 6 and not overlaps and not holes,
+           "{} px: {} cards in {} columns, no overlaps, one gap between cards ({} holes)".format(
+               width, len(cards), len(lefts), len(holes)))
+    ok(len({round(c[0]) for c in results[1300]["cards"]}) == 3
+       and len({round(c[0]) for c in results[760]["cards"]}) == 2,
+       "columns follow the window width (at least 340 px each)")
+    dlg.close()
+    shutil.rmtree(stage, ignore_errors=True)
+
+
 def run_checks(col, load_addon, pick):
     check_html(col, load_addon, pick)
     check_store(col, load_addon, pick)
@@ -1009,6 +1070,7 @@ def run_checks(col, load_addon, pick):
     check_overview_button(col, load_addon, pick)
     check_windows(col, load_addon, pick)
     check_143(col, load_addon, pick)
+    check_legacy_grid(col, load_addon, pick)
     print("\n{} check(s) failed".format(len(FAILS)) if FAILS else "\nall checks passed")
     for f in FAILS:
         print("  - " + f)

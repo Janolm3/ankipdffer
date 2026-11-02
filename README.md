@@ -71,6 +71,8 @@ Choose, per note type, which fields go to the front, back or extra section and h
 
 - **Page preview** with labelled dimensions that follows the option you are editing.
 - **Portrait or landscape** pages (*Page → Orientation*).
+- **Tighter Legacy HTML grid**: cards are packed into columns with no holes, in their original order.
+- **Exported files open in front** of Anki.
 - **Export info on/off**: hide the version / engine line in the bottom-right corner of PDF pages (*Page → Export info*).
 - **Option tabs aligned to the tab bar**: on *Content* and *Appearance* the controls run from the *Content* tab's centre line to the *Settings* tab's.
 - **Filter builder fixes**: pop-up lists no longer hide entries on macOS, and scrolling the rules no longer changes them.
@@ -180,7 +182,7 @@ Generate a single portable HTML file with:
 - Embedded images
 - Offline access
 - Interactive image viewing
-- Optional grid layout
+- Optional grid layout that packs cards into columns without holes
 - Easy sharing across devices
 
 ---

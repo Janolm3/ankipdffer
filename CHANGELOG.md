@@ -14,6 +14,9 @@ All notable changes to the **AnkiPdffer Dev** add-on will be documented in this 
 - The tab selector is a little wider, with more room around each tab name.
 - Page tab: *Page numbers* is labelled in the label column like the other options, with its checkbox where the controls start.
 
+- Legacy HTML grid packs cards like a masonry: each card goes to the currently shortest column (columns of at least 340 px, following the window width), so short cards no longer leave holes under their row. Card order is kept; printing falls back to one column.
+- After *Export PDF*, *Preview PDF* or *Legacy HTML* the opened file stays in front: AnkiPdffer no longer pulls Anki back over it, and the "PDF saved" note appears in the window's footer instead of a pop-up.
+
 ### Fixed
 - Filter builder: the pop-up lists were narrower than their buttons on macOS, which elided entries (choosing *any* made *all* disappear).
 - Filter builder: scrolling the list of rules no longer changes the pop-up or number under the pointer.
