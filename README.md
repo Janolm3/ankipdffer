@@ -13,8 +13,9 @@ AnkiPdffer turns flashcards into clean, readable documents for printing, offline
 
 ## What's new in 1.4.4
 
-- **Balanced option tabs**: every form is centred with equal margins, and on *Content* the controls start on the *Content* tab's centre line.
-- **Filter builder fix**: pop-up lists no longer hide entries on macOS.
+- **Page preview**: the *Page* tab shows a to-scale sketch of the page — margins, padding, gaps, line height, image limit and page numbers, each marked and labelled; the option you are editing is highlighted on the sketch, and clicking a mark jumps to its option.
+- **Balanced option tabs**: on *Content* and *Appearance* the controls run from the *Content* tab's centre line to the *Settings* tab's.
+- **Filter builder fixes**: pop-up lists no longer hide entries on macOS, and scrolling the rules no longer changes them.
 
 ## What's new in 1.4.3
 

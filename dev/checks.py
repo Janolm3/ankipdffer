@@ -827,13 +827,98 @@ def check_143(col, load_addon, pick):
     ok(builder.match.view().minimumWidth() >= builder.match.width(),
        "builder pop-up lists are at least as wide as their button (entries were elided on macOS)")
     builder.match.hidePopup()
+
+    # the wheel scrolls the list of rules: controls never take it, even when they hold the focus
+    from PyQt6.QtCore import QPointF, QPoint as _QPoint, Qt as _Qt
+    from PyQt6.QtGui import QWheelEvent
+    from PyQt6.QtWidgets import QApplication, QSpinBox
+
+    def wheel(widget):
+        ev = QWheelEvent(QPointF(5, 5), QPointF(5, 5), _QPoint(0, 0), _QPoint(0, 120),
+                         _Qt.MouseButton.NoButton, _Qt.KeyboardModifier.NoModifier,
+                         _Qt.ScrollPhase.NoScrollPhase, False)
+        QApplication.sendEvent(widget, ev)
+        return ev.isAccepted()
+
+    builder.rows[0].prop.setCurrentIndex(builder.rows[0].prop.findData("added"))
+    builder.rows[0].prop.setFocus()
+    spin = builder.rows[0].slot.parentWidget().findChild(QSpinBox)
+    before = (builder.rows[0].prop.currentIndex(), spin.value() if spin else None)
+    taken = wheel(builder.rows[0].prop) or (spin is not None and wheel(spin))
+    ok(not taken and before == (builder.rows[0].prop.currentIndex(), spin.value() if spin else None),
+       "filter builder: the wheel scrolls the rows, it does not change a pop-up or a number")
     builder.reject()
+
+    # Page tab: a to-scale sketch follows the options
+    dlg.tabs.setCurrentIndex(2)
+    QApplication.processEvents()
+    prev = dlg.page_preview
+    dlg.margin_spin.setValue(22)
+    dlg.page_combo.setCurrentIndex(dlg.page_combo.findText("A5"))
+    dlg.page_numbers_cb.setChecked(True)
+    QApplication.processEvents()
+    ok(prev._p["margin"] == 22 and prev._p["name"] == "A5" and prev._p["size"] == (148, 210)
+       and prev._p["numbers"], "page preview follows margins, paper size and page numbers")
+    from PyQt6.QtCore import QEvent as _QEvent
+    from PyQt6.QtGui import QImage
+    dlg._sync_preview_focus(None, dlg.padding_spin.lineEdit())
+    ok(prev._focus == "padding", "page preview: the focused option is drawn strongly")
+    dlg._sync_preview_focus(dlg.padding_spin.lineEdit(), dlg.filter_edit)
+    ok(prev._focus == "padding", "... and stays so while the focus is outside the options")
+    dlg.gap_spin.setValue(dlg.gap_spin.value() + 2)
+    ok(prev._focus == "gap", "... until another option is changed")
+    img = QImage(prev.size(), QImage.Format.Format_ARGB32)
+    prev.render(img)
+    keys = {k for _, k in prev._hits}
+    ok({"margin", "top", "padding", "gap", "lh", "img", "numbers", "page"} <= keys,
+       "page preview: every mark and label can be pointed at ({})".format(sorted(keys)))
+    label = next(rect for rect, k in prev._hits if k == "lh")
+    from PyQt6.QtCore import QPointF as _QPointF
+    from PyQt6.QtGui import QMouseEvent
+    pos = _QPointF(label.center())
+    QApplication.sendEvent(prev, QMouseEvent(_QEvent.Type.MouseMove, pos, prev.mapToGlobal(pos),
+                                             _Qt.MouseButton.NoButton, _Qt.MouseButton.NoButton,
+                                             _Qt.KeyboardModifier.NoModifier))
+    ok(prev._hover_in == "lh" and dlg.lh_spin.property("linked") is True,
+       "page preview: pointing at a label outlines its option in the form")
+    QApplication.sendEvent(prev, QMouseEvent(_QEvent.Type.MouseButtonPress, pos, prev.mapToGlobal(pos),
+                                             _Qt.MouseButton.LeftButton, _Qt.MouseButton.LeftButton,
+                                             _Qt.KeyboardModifier.NoModifier))
+    ok(prev._focus == "lh", "page preview: clicking a label edits its option")
+
+    # labels never overlap or touch, each other, the sheet or its caption: any size, any state
+    from PyQt6.QtCore import QSize as _QSize
+    lone = mod.macui.PagePreview()  # outside the layout, so it takes any size it is given
+    lone.set_params(**prev._p)
+    clashes = []
+    for w, h in ((240, 250), (300, 330), (420, 520), (560, 760)):
+        for focus, hover in ((None, None), ("padding", "lh"), ("gap", "padding"), ("lh", "gap")):
+            lone.set_focus(focus)
+            lone._hover_in = hover
+            lone.setMaximumWidth(10000)
+            lone.resize(w, h)
+            img = QImage(_QSize(w, h), QImage.Format.Format_ARGB32)
+            lone.render(img)
+            boxes = lone._labels
+            for n, a in enumerate(boxes):
+                if a.intersects(lone._sheet) or a.bottom() > h or a.top() < 0 or a.right() > w + 1:
+                    clashes.append((w, h, "outside", n, a.getRect(), lone._sheet.getRect()))
+                for b in boxes[n + 1:]:
+                    if a.adjusted(0, -2, 0, 2).intersects(b):
+                        clashes.append((w, h, focus, hover))
+    ok(not clashes, "page preview: labels keep apart and off the sheet at every size {}".format(clashes[:4]))
+    from PyQt6.QtGui import QImage
+    img = QImage(prev.size(), QImage.Format.Format_ARGB32)
+    prev.render(img)
+    ok(img.width() >= 176 and any(img.pixelColor(x, y).alpha() for x in range(0, img.width(), 7)
+                                  for y in range(0, img.height(), 7)), "page preview paints")
     dlg.close()
 
-    # Content tab: the line through the middle of the "Content" tab is the left edge of the
-    # "Fields" box; every form tab is centred with equal margins left and right
+    # Content and Appearance: the control column runs from the line through the middle of the
+    # "Content" tab to the line through the middle of "Settings"; the Page tab's form and its
+    # preview, and the Settings tab, are centred with equal margins left and right
     from PyQt6.QtCore import QPoint
-    from PyQt6.QtWidgets import QFormLayout
+    from PyQt6.QtWidgets import QComboBox, QFormLayout
 
     def margins(win, idx):
         scroll = win.stack.widget(idx)
@@ -848,7 +933,23 @@ def check_143(col, load_addon, pick):
             if field is not None and field.widget() is not None and field.widget().isVisible():
                 w = field.widget()
                 rights.append(w.mapTo(vp, QPoint(w.width(), 0)).x())
+        if idx == 2:  # the preview sits right of the form
+            w = win.page_preview
+            rights.append(w.mapTo(vp, QPoint(w.width(), 0)).x())
         return min(lefts), vp.width() - max(rights)
+
+    def edges(win, idx):
+        """(left, right) of the stretched controls on a form page, in global x."""
+        form = win.stack.widget(idx).widget()._form
+        out = []
+        for row in range(form.rowCount()):
+            field = form.itemAt(row, QFormLayout.ItemRole.FieldRole)
+            w = field.widget() if field is not None else None
+            if w is not None and w.isVisible() and (
+                    isinstance(w, QComboBox) or w.property("spans")
+                    or isinstance(w, mod.macui.SegmentedControl)):
+                out.append((w.mapToGlobal(QPoint(0, 0)).x(), w.mapToGlobal(QPoint(w.width(), 0)).x()))
+        return out
 
     for size in ((820, 560), (1300, 760)):
         win = mod.PDFExportDialog(mw)
@@ -856,21 +957,25 @@ def check_143(col, load_addon, pick):
         win.show()
         for _ in range(5):
             app.processEvents()
-        win.tabs.setCurrentIndex(0)
-        for _ in range(5):
-            app.processEvents()
-        tab = win.tabs.buttons[0]
-        diff = (win.render_radio.mapToGlobal(QPoint(0, 0)).x()
-                - tab.mapToGlobal(QPoint(tab.width() // 2, 0)).x())
+        first, last = win.tabs.buttons[0], win.tabs.buttons[-1]
+        axis_l = first.mapToGlobal(QPoint(first.width() // 2, 0)).x()
+        axis_r = last.mapToGlobal(QPoint(last.width() // 2, 0)).x()
+        for idx in (0, 1):
+            win.tabs.setCurrentIndex(idx)
+            for _ in range(5):
+                app.processEvents()
+            spans = edges(win, idx)
+            ok(len(spans) >= 5 and all(abs(l - axis_l) <= 1 and abs(r - axis_r) <= 1 for l, r in spans),
+               "{}x{}: tab {} controls run from the Content axis {} to the Settings axis {}: {}".format(
+                   size[0], size[1], idx, axis_l, axis_r, sorted(set(spans))[:3]))
         sides = []
-        for i in (0, 1, 2, 4):
+        for i in (2, 4):
             win.tabs.setCurrentIndex(i)
             for _ in range(5):
                 app.processEvents()
             sides.append(margins(win, i))
-        ok(abs(diff) <= 1 and all(abs(l - r) <= 2 for l, r in sides),
-           "{}x{}: Fields box starts on the Content tab's axis ({:+d}), forms centred {}".format(
-               size[0], size[1], diff, sides))
+        ok(all(abs(l - r) <= 2 for l, r in sides),
+           "{}x{}: Page (form + preview) and Settings forms are centred {}".format(size[0], size[1], sides))
         win.close()
     shutil.rmtree(stage, ignore_errors=True)
 

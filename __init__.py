@@ -1289,7 +1289,7 @@ class PDFExportDialog(QDialog):
         page.setObjectName("Page")
         outer = QHBoxLayout(page)
         outer.setContentsMargins(20, 12, 20, 12)
-        outer.addStretch(1)
+        outer.addStretch(1)  # item 0: pinned to the tab axis by _align_content_axis where a page asks for it
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         # centred both ways, with equal margins on every side
@@ -1311,8 +1311,8 @@ class PDFExportDialog(QDialog):
 
         Segmented controls and pop-up menus that fall a few points short of the widest control
         get its width (measured once the stylesheet applies), so the column has one right edge.
-        The form is centred both ways (see _form_page); on the Content tab the control column
-        is then widened so its left edge meets the Content tab's axis (see _align_content_axis).
+        The form is centred both ways (see _form_page); on Content and Appearance the control
+        column is then stretched between the Content and Settings tab axes (see _align_content_axis).
         """
         try:
             form = page._form
@@ -1445,6 +1445,7 @@ class PDFExportDialog(QDialog):
 
     def _build_content_tab(self):
         page, form = self._form_page()
+        page._axis = True  # controls run from the Content tab's axis to the Settings tab's
         self.render_radio = macui.SegmentedControl(
             [_t("source_fields"), _t("source_cards")], default=0)
         self.render_radio.group.idToggled.connect(self._on_render_radio_changed)
@@ -1479,15 +1480,17 @@ class PDFExportDialog(QDialog):
 
     def _build_appearance_tab(self):
         page, form = self._form_page()
+        page._axis = True  # controls run from the Content tab's axis to the Settings tab's
         self.theme_radio = macui.SegmentedControl(
             [_t("theme_light"), _t("theme_dark"), _t("theme_pro")], default=0)
         form.addRow(_t("lbl_theme"), self.theme_radio)
 
         self.font_combo = self._popup([name for name, _ in FONT_OPTIONS], 160)
+        self.font_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.fontsize_spin = self._spin(10, 24, 13, " px", QSpinBox)
         size_lbl = QLabel(_t("lbl_size"))
         size_lbl.setObjectName("Secondary")
-        form.addRow(_t("lbl_font"), self._hrow(self.font_combo, 6, size_lbl, self.fontsize_spin))
+        form.addRow(_t("lbl_font"), self._row_widget(self.font_combo, 6, size_lbl, self.fontsize_spin))
 
         self.width_radio = macui.SegmentedControl([
             _t("width_narrow"), _t("width_medium"), _t("width_wide"),
@@ -1500,9 +1503,11 @@ class PDFExportDialog(QDialog):
                 btn.setText(short)
                 btn.setToolTip(full)
         self.width_spin = self._spin(300, 3000, 800, " px")
-        self.width_spin.setVisible(False)
         self.width_radio.group.idToggled.connect(self._on_width_radio_changed)
-        form.addRow(_t("lbl_width"), self._hrow(self.width_radio, self.width_spin))
+        form.addRow(_t("lbl_width"), self.width_radio)
+        form.addRow("", self.width_spin)  # shown under the control only for "Custom"
+        self._width_form, self._width_row = form, form.rowCount() - 1
+        self._show_width_spin(False)
 
         self.layout_radio = macui.SegmentedControl(
             [_t("layout_standard"), _t("layout_compact")], default=1)
@@ -1522,6 +1527,22 @@ class PDFExportDialog(QDialog):
         for cb in (self.high_contrast_cb, self.strip_html_cb, self.grid_cb):
             form.addRow("", cb)
         return page
+
+    @classmethod
+    def _row_widget(cls, *items, spacing=8):
+        """An _hrow in a widget of its own, so the row can be given a width like any control."""
+        box = QWidget()
+        box.setObjectName("Page")
+        layout = cls._hrow(*items, spacing=spacing)
+        layout.setContentsMargins(0, 0, 0, 0)
+        box.setLayout(layout)
+        box.setProperty("spans", True)
+        return box
+
+    def _show_width_spin(self, visible):
+        if hasattr(self._width_form, "setRowVisible"):
+            self._width_form.setRowVisible(self._width_row, visible)
+        self.width_spin.setVisible(visible)
 
     def _build_page_tab(self):
         page, form = self._form_page()
@@ -1544,9 +1565,78 @@ class PDFExportDialog(QDialog):
         self.img_h_spin = self._spin(60, 800, 240, " px")
         form.addRow(_t("lbl_maximg"), self.img_h_spin)
         form.addRow(macui.separator())
-        self.page_numbers_cb = QCheckBox(_t("cb_page_numbers"))
-        form.addRow("", self.page_numbers_cb)
+        # label in the label column, the box where the other controls start
+        self.page_numbers_cb = QCheckBox()
+        self.page_numbers_cb.setAccessibleName(_t("cb_page_numbers"))
+        numbers_lbl = macui.form_label(_t("lbl_page_numbers"))
+        numbers_lbl.setBuddy(self.page_numbers_cb)
+        numbers_lbl.mousePressEvent = lambda e: self.page_numbers_cb.click()  # like a checkbox's own text
+        form.addRow(numbers_lbl, self.page_numbers_cb)
+
+        # a to-scale sketch of the page next to the options. The option being edited (focused or
+        # changed last) is drawn strongly; hovering an option or a mark on the sketch links the
+        # two, and clicking a mark moves the focus to its option
+        self.page_preview = macui.PagePreview()
+        outer = page.layout()
+        outer.insertSpacing(2, 44)
+        outer.insertWidget(3, self.page_preview)
+        self._preview_widgets = {
+            "margin": self.margin_spin, "top": self.top_margin_spin, "padding": self.padding_spin,
+            "gap": self.gap_spin, "lh": self.lh_spin, "img": self.img_h_spin,
+            "numbers": self.page_numbers_cb, "page": self.page_combo}
+        self._preview_keys = {}  # control (and a spin box's line edit, which takes its focus) -> key
+        for key, widget in self._preview_widgets.items():
+            self._preview_keys[widget] = key
+            if isinstance(widget, QAbstractSpinBox):
+                self._preview_keys[widget.lineEdit()] = key
+            widget.installEventFilter(self)
+            changed = (widget.valueChanged if isinstance(widget, QAbstractSpinBox) else
+                       widget.toggled if isinstance(widget, QCheckBox) else widget.currentIndexChanged)
+            changed.connect(lambda *_, k=key: self._loading or self.page_preview.set_focus(k))
+        self._preview_linked = None
+        QApplication.instance().focusChanged.connect(self._sync_preview_focus)
+        self.page_preview.picked.connect(self._pick_preview_option)
+        self.page_preview.hovered.connect(self._link_preview_option)
+        for widget in (self.margin_spin, self.top_margin_spin, self.padding_spin, self.gap_spin,
+                       self.lh_spin, self.img_h_spin, self.fontsize_spin, self.width_spin):
+            widget.valueChanged.connect(self._update_page_preview)
+        for widget in (self.page_combo, self.card_style_combo):
+            widget.currentIndexChanged.connect(self._update_page_preview)
+        for widget in (self.page_numbers_cb, self.show_title_cb, self.card_numbers_cb):
+            widget.toggled.connect(self._update_page_preview)
+        for group in (self.theme_radio, self.width_radio):
+            group.group.idToggled.connect(self._update_page_preview)
+        self._update_page_preview()
         return page
+
+    def _update_page_preview(self, *_):
+        needed = ("page_preview", "theme_radio", "width_radio", "width_spin", "card_style_combo",
+                  "show_title_cb", "card_numbers_cb", "fontsize_spin")
+        if not all(hasattr(self, name) for name in needed):
+            return  # still building the window
+        name = self.page_combo.currentText()
+
+        def note(key, spin):  # "Margins 15 mm": the form's own label and the value as shown
+            return "{} {}".format(_t(key).rstrip(":\uff1a ").strip(), spin.text())
+
+        notes = {"top": note("lbl_top_margin", self.top_margin_spin),
+                 "margin": note("lbl_margins", self.margin_spin),
+                 "padding": note("lbl_padding", self.padding_spin),
+                 "gap": note("lbl_gap", self.gap_spin),
+                 "lh": note("lbl_lineheight", self.lh_spin),
+                 "img": note("lbl_maximg", self.img_h_spin)}
+        if self.page_numbers_cb.isChecked():
+            notes["numbers"] = _t("cb_page_numbers")
+        self.page_preview.set_params(
+            notes=notes,
+            name=name, size=PAGE_SIZES.get(name, (210, 297)),
+            margin=self.margin_spin.value(), top=self.top_margin_spin.value(),
+            padding=self.padding_spin.value(), gap=self.gap_spin.value(), lh=self.lh_spin.value(),
+            img=self.img_h_spin.value(), numbers=self.page_numbers_cb.isChecked(),
+            font=self.fontsize_spin.value(), card_width=self._get_card_max_width(),
+            style=self.card_style_combo.currentIndex(), title=self.show_title_cb.isChecked(),
+            card_numbers=self.card_numbers_cb.isChecked(),
+            tokens=_theme_tokens(self.theme_radio.currentIndex()))
 
     FIELDS_MAX_WIDTH = 900
 
@@ -1656,7 +1746,53 @@ class PDFExportDialog(QDialog):
         if (event.type() == QEvent.Type.Resize and hasattr(self, "fields_scroll")
                 and obj is self.fields_scroll.viewport()):
             self._reflow_fields()
+        if (event.type() in (QEvent.Type.Enter, QEvent.Type.Leave)
+                and obj in getattr(self, "_preview_keys", {})):
+            QTimer.singleShot(0, self._sync_preview_hover)  # once the pointer has settled
         return super().eventFilter(obj, event)
+
+    # ------------------------------------------------------------- page preview links
+    def _sync_preview_focus(self, _old, new):
+        """The option with the keyboard focus is the one the sketch shows strongly (it stays so
+        when the focus moves elsewhere, until another option is focused or changed)."""
+        try:
+            key = self._preview_keys.get(new)
+            if key:
+                self.page_preview.set_focus(key)
+        except RuntimeError:  # the window is gone
+            pass
+
+    def _sync_preview_hover(self):
+        try:
+            key = next((k for w, k in self._preview_keys.items() if w.isVisible() and w.underMouse()), None)
+            self.page_preview.set_hover(key)
+        except RuntimeError:
+            pass
+
+    def _link_preview_option(self, key):
+        """Pointer over a mark on the sketch: outline its option in the form."""
+        widget = self._preview_widgets.get(key)
+        if widget is self._preview_linked:
+            return
+        for w, on in ((self._preview_linked, False), (widget, True)):
+            if w is not None:
+                w.setProperty("linked", on)
+                w.style().unpolish(w)
+                w.style().polish(w)
+                w.update()
+        self._preview_linked = widget
+
+    def _pick_preview_option(self, key):
+        """A mark on the sketch was clicked: edit its option."""
+        widget = self._preview_widgets.get(key)
+        if widget is None:
+            return
+        widget.setFocus(Qt.FocusReason.MouseFocusReason)
+        self.page_preview.set_focus(key)
+        if isinstance(widget, QAbstractSpinBox):
+            widget.selectAll()
+        elif isinstance(widget, QComboBox):
+            widget.showPopup()
 
     def _reflow_fields(self, force=False):
         """Switch the field rows between one-line and two-line layout to fit the window."""
@@ -2076,53 +2212,69 @@ class PDFExportDialog(QDialog):
             QTimer.singleShot(0, self._align_content_axis)
 
     def _align_content_axis(self):
-        """Content tab: the vertical line through the middle of the "Content" tab button is the
-        left edge of the control column (the "Fields" box), while the form stays centred with
-        equal margins left and right. Both hold when the controls are as wide as
-
-            2 x (panel centre - tab axis) + gap + label column
-
-        which does not depend on the window size (the tab bar and the form share the panel's
-        centre). A narrow window caps the width; the form then stays centred."""
+        """Content and Appearance: the control column runs from the vertical line through the
+        middle of the "Content" tab button to the one through the middle of "Settings"; the labels
+        hang to its left. Narrow windows cap the width, and the form never starts left of its
+        margin. Pages are measured from the shared stack, so hidden pages line up too."""
         self._align_queued = False
         try:
-            tab = self.tabs.buttons[0]
-            axis = tab.mapTo(self.tab_box, QPoint(tab.width() // 2, 0)).x()
-            scroll = self.stack.widget(0)
-            page = scroll.widget() if isinstance(scroll, QScrollArea) else scroll
-            form = page._form
-            viewport = scroll.viewport() if isinstance(scroll, QScrollArea) else page
-            centre = viewport.mapTo(self.tab_box, QPoint(viewport.width() // 2, 0)).x()
-            label_w = 0
-            controls = []
-            for row in range(form.rowCount()):
-                label = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
-                field = form.itemAt(row, QFormLayout.ItemRole.FieldRole)
-                if label is None or field is None:
+            first, last = self.tabs.buttons[0], self.tabs.buttons[-1]
+            axis_l = first.mapTo(self.tab_box, QPoint(first.width() // 2, 0)).x()
+            axis_r = last.mapTo(self.tab_box, QPoint(last.width() // 2, 0)).x()
+            stack_left = self.stack.mapTo(self.tab_box, QPoint(0, 0)).x()
+            pages = []
+            for i in range(self.stack.count()):
+                scroll = self.stack.widget(i)
+                page = scroll.widget() if isinstance(scroll, QScrollArea) else scroll
+                if not getattr(page, "_axis", False):
                     continue
-                label_w = max(label_w, label.sizeHint().width())
-                w = field.widget()
-                if isinstance(w, QComboBox) or isinstance(w, macui.SegmentedControl):
-                    controls.append(w)
-            if not controls:
+                page.ensurePolished()
+                form = page._form
+                label_w, spans = 0, []
+                for row in range(form.rowCount()):
+                    label = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
+                    field = form.itemAt(row, QFormLayout.ItemRole.FieldRole)
+                    if label is None or field is None:
+                        continue
+                    if label.widget() is not None:
+                        label.widget().ensurePolished()
+                    label_w = max(label_w, label.sizeHint().width())
+                    w = field.widget()
+                    if w is None:
+                        continue
+                    w.ensurePolished()
+                    if (isinstance(w, QComboBox) or w.property("spans")
+                            or (isinstance(w, macui.SegmentedControl) and w.property("role") != "tabs")):
+                        w._natural_w = max(getattr(w, "_natural_w", 0), w.sizeHint().width())
+                        spans.append(w)
+                if spans:
+                    pages.append((scroll, page, form, label_w, spans))
+            if not pages:
                 return
-            natural = max(max(w.sizeHint().width(), getattr(w, "_natural_w", 0)) for w in controls)
-            for w in controls:
-                w._natural_w = max(getattr(w, "_natural_w", 0), w.sizeHint().width())
-            left, _, right, _ = page.layout().getContentsMargins()
-            room = viewport.width() - left - right - label_w - form.horizontalSpacing()
-            width = 2 * (centre - axis) + form.horizontalSpacing() + label_w
-            width = int(max(natural, min(width, room)))
-            for w in controls:
-                if w.width() != width or w.minimumWidth() != width:
-                    w.setFixedWidth(width)
+            # one column width for every page, so the right edge stays put when switching tabs
+            natural = max(w._natural_w for _, _, _, _, spans in pages for w in spans)
+            wanted = max(natural, axis_r - axis_l)
+            for scroll, page, form, label_w, spans in pages:
+                gap = form.horizontalSpacing()
+                left, _, right, _ = page.layout().getContentsMargins()
+                bar = scroll.verticalScrollBar() if isinstance(scroll, QScrollArea) else None
+                view_w = self.stack.width() - (bar.width() if bar is not None and bar.isVisible() else 0)
+                start = max(left, axis_l - stack_left - label_w - gap)  # where the labels begin
+                room = view_w - right - start - label_w - gap
+                width = int(max(natural, min(wanted, room)))
+                page.layout().itemAt(0).changeSize(
+                    int(start - left), 0, QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Minimum)  # may give way in a narrow window
+                for w in spans:
+                    if w.width() != width or w.minimumWidth() != width or w.maximumWidth() != width:
+                        w.setFixedWidth(width)
+                page.layout().invalidate()
         except (AttributeError, IndexError, RuntimeError):
             pass
 
     # ------------------------------------------------------------------ slots
     def _on_width_radio_changed(self, idx, checked):
         if checked:
-            self.width_spin.setVisible(idx == 4)
+            self._show_width_spin(idx == 4)
 
     def _get_card_max_width(self):
         idx = self.width_radio.currentIndex()

@@ -10,9 +10,9 @@ import re
 import tempfile
 
 from aqt.qt import (
-    QButtonGroup, QColor, QEvent, QFrame, QHBoxLayout, QIcon, QLabel, QObject, QPainter,
-    QPen, QPixmap, QPushButton, QRectF, QScrollArea, QSize, QSizePolicy, QStackedWidget,
-    QStyledItemDelegate, QVBoxLayout, QWidget, Qt,
+    QButtonGroup, QColor, QEvent, QFont, QFontMetricsF, QFrame, QHBoxLayout, QIcon, QLabel, QObject,
+    QPainter, QPainterPath, QPainterPathStroker, QPen, QPixmap, QPointF, QPushButton, QRectF, QScrollArea, QSize,
+    QSizePolicy, QStackedWidget, QStyledItemDelegate, QVBoxLayout, QWidget, Qt, pyqtSignal,
 )
 
 LIGHT = dict(
@@ -253,6 +253,11 @@ QPushButton#Segment, QPushButton#Segment:checked, QPushButton#Segment:hover, QPu
     padding: 3px 12px; min-height: 16px; font-size: 12px; color: {text};
 }}
 QPushButton#Segment:disabled {{ color: {disabled}; }}
+/* the tab selector is a little roomier than the other segmented controls */
+QFrame#Segmented[role="tabs"] QPushButton#Segment, QFrame#Segmented[role="tabs"] QPushButton#Segment:checked,
+QFrame#Segmented[role="tabs"] QPushButton#Segment:hover, QFrame#Segmented[role="tabs"] QPushButton#Segment:pressed {{
+    padding: 3px 17px;
+}}
 
 /* ---------- pop-up buttons ---------- */
 QComboBox {{
@@ -295,6 +300,8 @@ QLineEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox {{
     selection-background-color: {accent}; selection-color: #ffffff;
 }}
 QLineEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {{ border: 1px solid {accent}; }}
+QSpinBox[linked="true"], QDoubleSpinBox[linked="true"], QComboBox[linked="true"] {{ border: 1px solid {accent}; }}
+QCheckBox[linked="true"] {{ color: {accent}; }}
 QLineEdit#SearchField {{ border-radius: 7px; padding: 3px 6px; }}
 QSpinBox, QDoubleSpinBox {{ padding-right: 18px; }}
 QSpinBox::up-button, QDoubleSpinBox::up-button {{
@@ -552,6 +559,493 @@ class ElidedLabel(QLabel):
         elided = self.fontMetrics().elidedText(self._full, Qt.TextElideMode.ElideRight, self.width())
         if elided != super().text():
             super().setText(elided)
+
+
+class PagePreview(QWidget):
+    """A sketch of an exported page, drawn to scale from the Page and Appearance options.
+
+    The sheet has the chosen paper size; margins are in millimetres and padding, gaps and the
+    image limit in CSS pixels (0.2646 mm), exactly as the export CSS reads them, so changing an
+    option moves the sketch the way it will move the PDF. Dimension lines mark what each option
+    measures and lead to labelled values beside the sheet (`notes`: key -> text).
+
+    The option being edited (`set_focus`) is drawn strongly - tinted area, accent dimension line,
+    filled label - and the others step back; the one under the pointer, in the form or here
+    (`set_hover`, `hovered`), is marked lightly. Clicking a mark or label emits `picked`.
+    Keys: margin, top, padding, gap, lh, img, numbers, page.
+    """
+
+    picked = pyqtSignal(str)
+    hovered = pyqtSignal(object)  # key under the pointer, or None
+
+    PX_MM = 25.4 / 96
+    CARDS = ((2, 3, False), (1, 2, True), (2, 4, False), (1, 3, False), (2, 2, False), (1, 4, False))
+    BARS = (0.94, 0.78, 0.88, 0.52, 0.84, 0.66, 0.9, 0.4)
+    IMAGE_PX = (520, 4 / 3)  # natural height of the sample picture and its aspect ratio
+    NOTE_PX = 11  # label font size
+    LABEL_GAP = 5  # space between two labels
+    PAD = 6  # space around the sheet
+    SHEET_W = (150, 440)  # the sheet's width range; within it the height decides
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        self.setMinimumHeight(250)
+        self.setMinimumWidth(240)
+        self.setMouseTracking(True)
+        self._p = {}
+        self._focus = None
+        self._hover_out = None  # from the form
+        self._hover_in = None  # from the pointer over the sketch
+        self._hits = []
+        self._labels = []
+        self._sheet = QRectF()
+        self._want = 360
+
+    def sizeHint(self):
+        return QSize(self._want, 380)
+
+    def set_params(self, **params):
+        if params != self._p:
+            self._p = params
+            self._fit_width()
+            self.update()
+
+    def set_focus(self, key):
+        if key != self._focus:
+            self._focus = key
+            self.update()
+
+    def set_hover(self, key):
+        if key != self._hover_out:
+            self._hover_out = key
+            self.update()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._fit_width()
+
+    # ------------------------------------------------------------ pointer
+    def _key_at(self, pos):
+        for rect, key in self._hits:
+            if rect.contains(QPointF(pos)):
+                return key
+        return None
+
+    def mouseMoveEvent(self, event):
+        key = self._key_at(event.position())
+        if key != self._hover_in:
+            self._hover_in = key
+            self.setCursor(Qt.CursorShape.PointingHandCursor if key else Qt.CursorShape.ArrowCursor)
+            self.hovered.emit(key)
+            self.update()
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        if self._hover_in is not None:
+            self._hover_in = None
+            self.unsetCursor()
+            self.hovered.emit(None)
+            self.update()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        key = self._key_at(event.position())
+        if key and event.button() == Qt.MouseButton.LeftButton:
+            self.picked.emit(key)
+        super().mousePressEvent(event)
+
+    # ------------------------------------------------------------ size
+    def _note_font(self, bold=False):
+        font = QFont(self.font())
+        font.setPixelSize(self.NOTE_PX)
+        font.setBold(bold)
+        return font
+
+    def _gutter(self):
+        """Width of the label column right of the sheet."""
+        notes = self._p.get("notes") or {}
+        if not notes:
+            return 0
+        metrics = QFontMetricsF(self._note_font(True))
+        return int(max(metrics.horizontalAdvance(text) for text in notes.values())) + 34
+
+    def _fit_width(self):
+        """Ask for the width the sheet drawn at this height needs, plus its labels, so the sketch
+        sits flush in its column (it never insists: the minimum width stays small)."""
+        if not self._p:
+            return
+        pw, ph = self._p["size"]
+        sheet_w = max(self.SHEET_W[0], min(self.SHEET_W[1], (self.height() - 32) * pw / ph))
+        want = int(sheet_w + 2 * self.PAD + self._gutter())
+        if want != self._want:
+            self._want = want
+            self.setMaximumWidth(want)
+            self.updateGeometry()
+
+    # ------------------------------------------------------------ painting
+    def _level(self, key):
+        """2: the option being edited, 1: the one under the pointer, 0: neither."""
+        if key == self._focus:
+            return 2
+        return 1 if key in (self._hover_in, self._hover_out) else 0
+
+    def paintEvent(self, event):
+        p = self._p
+        if not p:
+            return
+        pal = current()
+        t = p["tokens"]
+        notes = p.get("notes") or {}
+        gutter = self._gutter()
+        pw, ph = p["size"]
+        avail = QRectF(self.PAD, self.PAD, self.width() - 2 * self.PAD - gutter, self.height() - 32)
+        if avail.width() < 20 or avail.height() < 20:
+            return
+        qp = _antialiased(self)
+        scale = min(avail.width() / pw, avail.height() / ph, self.SHEET_W[1] / pw)  # px per mm
+        sheet = QRectF(avail.left() + (avail.width() - pw * scale) / 2,
+                       avail.center().y() - ph * scale / 2, pw * scale, ph * scale)
+        px = scale * self.PX_MM  # screen px per CSS px
+        accent = qcolor(pal["accent"])
+        self._sheet = sheet
+
+        qp.setPen(Qt.PenStyle.NoPen)
+        for grow, alpha in ((3, 14), (1.5, 26)):  # soft shadow
+            qp.setBrush(QColor(0, 0, 0, alpha))
+            qp.drawRoundedRect(sheet.adjusted(-grow, -grow + 2, grow, grow + 2), 3 + grow, 3 + grow)
+        _rounded(qp, sheet, 2, t["body"], "rgba(128,128,128,0.45)")
+
+        margin, top = p["margin"], p["top"]
+        bottom = max(top, 12 if p["numbers"] else 9)
+        content = QRectF(sheet.left() + margin * scale, sheet.top() + top * scale,
+                         sheet.width() - 2 * margin * scale,
+                         sheet.height() - (top + bottom) * scale)
+        guide = QColor(accent)
+        guide.setAlpha(110)
+        qp.setPen(QPen(guide, 0.8, Qt.PenStyle.DashLine))
+        qp.setBrush(Qt.BrushStyle.NoBrush)
+        qp.drawRect(content)
+
+        bsz = p["font"]
+        bar_h = max(1.5, bsz * 0.5 * px)
+        pitch = max(bar_h + 1, bsz * p["lh"] * px)
+        y = content.top()
+        if p["title"]:
+            qp.setPen(Qt.PenStyle.NoPen)
+            for width, height, colour in ((0.42, max(2.0, bsz * 0.95 * px), t["acc"]),
+                                          (0.28, bar_h, t["mut"])):
+                qp.setBrush(qcolor(colour))
+                w = content.width() * width
+                qp.drawRoundedRect(QRectF(content.center().x() - w / 2, y + 4 * px, w, height),
+                                   height / 2, height / 2)
+                y += 4 * px + height + 8 * px
+            y += 4 * px
+        card_w = content.width()
+        if p["card_width"] > 0:
+            card_w = min(card_w, p["card_width"] * px)
+        left = content.center().x() - card_w / 2
+        pad_v = p["padding"] * px
+        pad_h = max(4, p["padding"] - 4) * px
+        gap = p["gap"] * px
+        cards, image_rect, line_marks = [], None, []
+        i = 0
+        while i < 24:
+            q_lines, a_lines, has_image = self.CARDS[i % len(self.CARDS)]
+            inner_w = card_w - 2 * pad_h
+            img = None
+            if has_image:
+                nat_h, aspect = self.IMAGE_PX
+                h_css = min(nat_h, p["img"])
+                w_css = h_css * aspect
+                if w_css * px > inner_w:
+                    w_css = inner_w / px
+                    h_css = w_css / aspect
+                img = (w_css * px, h_css * px)
+            num_h = 13 * px if p["card_numbers"] else 0
+            height = (2 * pad_v + num_h + (q_lines + a_lines) * pitch + 0.7 * pitch
+                      + (img[1] + 0.5 * pitch if img else 0))
+            if y + height > content.bottom() + 0.5:
+                break
+            card = QRectF(left, y, card_w, height)
+            self._card(qp, card, p["style"], t, px)
+            bands = []  # one band per line of text, for the line-height mark
+            cy = y + pad_v
+            inner_x = card.left() + pad_h
+            if p["card_numbers"]:
+                qp.setBrush(qcolor(t["mut"]))
+                qp.drawRoundedRect(QRectF(inner_x, cy, 22 * px, max(1.4, 5 * px)), 1, 1)
+                cy += num_h
+            for n in range(q_lines):
+                self._bar(qp, inner_x, cy, inner_w * self.BARS[(i + n) % len(self.BARS)], bar_h, pitch,
+                          t["txt"], 150, bands)
+                cy += pitch
+            if img:
+                cy += 0.25 * pitch
+                rect = QRectF(card.center().x() - img[0] / 2, cy, img[0], img[1])
+                image_rect = image_rect or rect
+                self._picture(qp, rect, t)
+                cy += img[1] + 0.25 * pitch
+            qp.setPen(QPen(qcolor(t["div"]), 1))
+            qp.drawLine(QPointF(inner_x, cy + 0.35 * pitch), QPointF(inner_x + inner_w, cy + 0.35 * pitch))
+            cy += 0.7 * pitch
+            first_answer = cy
+            for n in range(a_lines):
+                self._bar(qp, inner_x, cy, inner_w * self.BARS[(i + n + 3) % len(self.BARS)], bar_h, pitch,
+                          t["txt"], 85, bands)
+                cy += pitch
+            if a_lines >= 2:
+                line_marks.append((i, (first_answer, first_answer + pitch, card), bands))
+            cards.append((card, QRectF(inner_x, y + pad_v, inner_w, height - 2 * pad_v)))
+            y += height + gap
+            i += 1
+        gaps = [QRectF(left, a[0].bottom(), card_w, gap) for a, b in zip(cards, cards[1:])]
+        # line height is marked on a card further down, away from the padding mark on the first
+        lh_span, lh_bands = None, []
+        if line_marks:
+            _, lh_span, lh_bands = next((m for m in line_marks if m[0] >= 2), line_marks[0])
+            card = lh_span[2]  # bands across the whole text width: the rhythm, not the words
+            lh_bands = [QRectF(card.left() + pad_h, b.top(), card.width() - 2 * pad_h, b.height())
+                        for b in lh_bands]
+        number = None
+        if p["numbers"]:
+            w, h = max(10.0, 36 * px), max(1.6, 5 * px)
+            number = QRectF(sheet.center().x() - w / 2, sheet.bottom() - bottom * scale / 2 - h / 2, w, h)
+            qp.setPen(Qt.PenStyle.NoPen)
+            qp.setBrush(qcolor(t["mut"]))
+            qp.drawRoundedRect(number, h / 2, h / 2)
+
+        # what each option controls: areas to tint (and to point at), dimension lines, label anchors
+        areas = {
+            "margin": [QRectF(sheet.left(), sheet.top(), margin * scale, sheet.height()),
+                       QRectF(content.right(), sheet.top(), margin * scale, sheet.height())],
+            "top": [QRectF(sheet.left(), sheet.top(), sheet.width(), top * scale),
+                    QRectF(sheet.left(), content.bottom(), sheet.width(), bottom * scale)],
+            "gap": [g.adjusted(0, -1, 0, 1) if g.height() < 2 else g for g in gaps],
+            # every other line: the rhythm of the line height, with a free line between two bands
+            "lh": lh_bands[::2],
+            "img": [image_rect] if image_rect is not None else [],
+            "numbers": [number.adjusted(-4, -3, 4, 3)] if number is not None else [],
+            "page": [],
+        }
+        dims = []  # (key, start, end, anchor)
+        x = sheet.right() - margin * scale / 2
+        dims.append(("top", QPointF(x, sheet.top()), QPointF(x, content.top()),
+                     QPointF(x, (sheet.top() + content.top()) / 2)))
+        y = content.top() + content.height() * 0.5
+        dims.append(("margin", QPointF(content.right(), y), QPointF(sheet.right(), y),
+                     QPointF((content.right() + sheet.right()) / 2, y)))
+        padding_ring = None
+        if cards:
+            card, inner = cards[0]
+            padding_ring = QPainterPath()
+            padding_ring.addRect(card)
+            padding_ring.addRect(inner)
+            padding_ring.setFillRule(Qt.FillRule.OddEvenFill)
+            y = inner.top() + min(pitch, inner.height()) / 2
+            dims.append(("padding", QPointF(inner.right(), y), QPointF(card.right(), y),
+                         QPointF(card.right(), y)))
+        if gaps:
+            g = gaps[0]
+            x = g.right() - g.width() * 0.12
+            dims.append(("gap", QPointF(x, g.top()), QPointF(x, g.bottom()), QPointF(x, g.center().y())))
+        if lh_span:
+            y0, y1, card = lh_span
+            x = card.right() - pad_h / 2
+            dims.append(("lh", QPointF(x, y0), QPointF(x, y1), QPointF(x, (y0 + y1) / 2)))
+        if image_rect is not None:
+            x = image_rect.right() + max(3.0, 4 * px)
+            dims.append(("img", QPointF(x, image_rect.top()), QPointF(x, image_rect.bottom()),
+                         QPointF(x, image_rect.center().y())))
+        if number is not None:
+            dims.append(("numbers", None, None, QPointF(number.right() + 3, number.center().y())))
+
+        active = any(self._level(k) == 2 for k in notes) or self._focus == "page"
+        shapes = {1: QPainterPath(), 2: QPainterPath()}
+        for key in list(areas) + ["padding"]:
+            level = self._level(key)
+            if not level:
+                continue
+            shape = QPainterPath()
+            shape.setFillRule(Qt.FillRule.WindingFill)
+            for rect in areas.get(key, []):
+                shape.addRect(rect)
+            if key == "padding" and padding_ring is not None:
+                shape = shape.united(padding_ring)
+            shapes[level] = shapes[level].united(shape)
+        # the hovered area keeps a clear gap from the edited one, and every area has an edge,
+        # so neighbouring marks never run together
+        halo = QPainterPathStroker()
+        halo.setWidth(5)
+        shapes[1] = shapes[1].subtracted(shapes[2].united(halo.createStroke(shapes[2])))
+        for level in (1, 2):
+            if shapes[level].isEmpty():
+                continue
+            fill, edge = qcolor(pal["accent_soft"]), QColor(accent)
+            if level == 1:
+                fill.setAlpha(int(fill.alpha() * 0.6))
+            edge.setAlpha(200 if level == 2 else 110)
+            qp.setPen(QPen(edge, 1))
+            qp.setBrush(fill)
+            qp.drawPath(shapes[level])
+        if self._level("page"):
+            qp.setPen(QPen(accent, 2 if self._level("page") == 2 else 1))
+            qp.setBrush(Qt.BrushStyle.NoBrush)
+            qp.drawRoundedRect(sheet, 2, 2)
+        for key, a, b, _ in dims:
+            if a is not None and key in notes:
+                self._dimension(qp, a, b, accent, self._level(key), active)
+
+        # labels beside the sheet, in the order of what they point at, never overlapping
+        rows = sorted((anchor.y(), key, anchor) for key, _, _, anchor in dims if key in notes)
+        line_h = self.NOTE_PX + 7  # a label's height
+        step = line_h + self.LABEL_GAP  # labels never touch, highlighted or not
+        ys = self._stack([want for want, _, _ in rows], step, line_h / 2 + 2, self.height() - line_h / 2 - 2)
+        hits = []
+        self._labels = []  # drawn label boxes (the checks make sure they never overlap)
+        label_x = sheet.right() + 20
+        metrics = QFontMetricsF(self._note_font(True))
+        for (_, key, anchor), ly in zip(rows, ys):
+            level = self._level(key)
+            lead = QColor(accent) if level else qcolor(pal["secondary"])
+            lead.setAlpha(255 if level else (60 if active else 120))
+            qp.setPen(QPen(lead, 1.2 if level == 2 else 0.8))
+            path = QPainterPath(anchor)
+            path.lineTo(QPointF(max(anchor.x(), sheet.right()) + 6, anchor.y()))
+            path.lineTo(QPointF(label_x - 4, ly))
+            qp.setBrush(Qt.BrushStyle.NoBrush)
+            qp.drawPath(path)
+            qp.setPen(Qt.PenStyle.NoPen)
+            qp.setBrush(lead)
+            qp.drawEllipse(anchor, 2.0 if level == 2 else 1.6, 2.0 if level == 2 else 1.6)
+            text = notes[key]
+            box = QRectF(label_x, ly - line_h / 2, metrics.horizontalAdvance(text) + 12, line_h)
+            qp.setFont(self._note_font(level == 2))
+            if level == 2:  # the option being edited: a filled label
+                qp.setBrush(accent)
+                qp.drawRoundedRect(box, line_h / 2, line_h / 2)
+                qp.setPen(QColor("#ffffff"))
+            elif level == 1:
+                qp.setBrush(qcolor(pal["accent_soft"]))
+                qp.drawRoundedRect(box, line_h / 2, line_h / 2)
+                qp.setPen(accent)
+            else:
+                colour = qcolor(pal["text"])
+                if active:
+                    colour.setAlpha(110)
+                qp.setPen(colour)
+            qp.drawText(box, Qt.AlignmentFlag.AlignCenter, text)
+            self._labels.append(box)
+            hits.append((box.adjusted(-4, -1, 4, 1), key))
+
+        caption = QRectF(sheet.left(), sheet.bottom() + 6, sheet.width(), 16)  # stays under the sheet
+        page_level = self._level("page")
+        qp.setFont(self._note_font(page_level == 2))
+        qp.setPen(accent if page_level else qcolor(pal["secondary"]))
+        qp.drawText(caption, Qt.AlignmentFlag.AlignCenter,
+                    "{} · {:g} × {:g} mm".format(p["name"], pw, ph))
+        qp.end()
+
+        # what the pointer can pick on the sheet: small, specific marks before the large areas
+        for key in ("img", "numbers", "gap"):
+            hits.extend((rect.adjusted(-2, -2, 2, 2), key) for rect in areas[key])
+        if lh_span:
+            y0, y1, card = lh_span
+            hits.append((QRectF(card.left(), y0, card.width(), y1 - y0), "lh"))
+        if cards:
+            card, inner = cards[0]
+            for rect in (QRectF(card.left(), card.top(), card.width(), inner.top() - card.top()),
+                         QRectF(card.left(), inner.bottom(), card.width(), card.bottom() - inner.bottom()),
+                         QRectF(card.left(), card.top(), inner.left() - card.left(), card.height()),
+                         QRectF(inner.right(), card.top(), card.right() - inner.right(), card.height())):
+                hits.append((rect.adjusted(-1, -1, 1, 1), "padding"))
+        for key in ("top", "margin"):
+            hits.extend((rect, key) for rect in areas[key])
+        hits.append((caption, "page"))
+        self._hits = [(rect, key) for rect, key in hits if key in notes or key == "page"]
+
+    @staticmethod
+    def _stack(wanted, step, low, high):
+        """Positions as close as possible to `wanted` (sorted), at least `step` apart, within
+        [low, high]; when they cannot all fit the step shrinks evenly instead of overlapping."""
+        if not wanted:
+            return []
+        if len(wanted) > 1:
+            step = min(step, (high - low) / (len(wanted) - 1))
+        ys = []
+        for want in wanted:
+            ys.append(max(want, low, ys[-1] + step if ys else low))
+        limit = high
+        for n in range(len(ys) - 1, -1, -1):  # push back up from the bottom
+            ys[n] = min(ys[n], limit)
+            limit = ys[n] - step
+        return ys
+
+    @staticmethod
+    def _dimension(qp, a, b, accent, level, dimmed):
+        """A measured span: a line with short end ticks across it."""
+        colour = QColor(accent)
+        colour.setAlpha(255 if level else (70 if dimmed else 150))
+        qp.setPen(QPen(colour, (1.6, 1.2, 0.9)[2 - level] if level else 0.9))
+        qp.drawLine(a, b)
+        dx, dy = b.x() - a.x(), b.y() - a.y()
+        length = max(1e-6, (dx * dx + dy * dy) ** 0.5)
+        tick = 3.5 if level == 2 else 2.5
+        nx, ny = -dy / length * tick, dx / length * tick
+        for point in (a, b):
+            qp.drawLine(QPointF(point.x() - nx, point.y() - ny), QPointF(point.x() + nx, point.y() + ny))
+
+    @staticmethod
+    def _bar(qp, x, y, width, bar_h, pitch, colour, alpha, bands):
+        c = qcolor(colour)
+        c.setAlpha(alpha)
+        qp.setPen(Qt.PenStyle.NoPen)
+        qp.setBrush(c)
+        qp.drawRoundedRect(QRectF(x, y + (pitch - bar_h) / 2, width, bar_h), bar_h / 2, bar_h / 2)
+        bands.append(QRectF(x - 1, y, width + 2, pitch))
+
+    @staticmethod
+    def _picture(qp, rect, t):
+        qp.setPen(QPen(qcolor(t["brd"]), 1))
+        qp.setBrush(qcolor(t["alt"]))
+        qp.drawRect(rect)
+        qp.setPen(Qt.PenStyle.NoPen)
+        qp.setBrush(qcolor(t["mut"]))
+        w, h = rect.width(), rect.height()
+        hills = QPainterPath()
+        hills.moveTo(rect.left() + w * 0.12, rect.bottom() - h * 0.14)
+        hills.lineTo(rect.left() + w * 0.38, rect.top() + h * 0.42)
+        hills.lineTo(rect.left() + w * 0.55, rect.top() + h * 0.64)
+        hills.lineTo(rect.left() + w * 0.68, rect.top() + h * 0.5)
+        hills.lineTo(rect.left() + w * 0.88, rect.bottom() - h * 0.14)
+        hills.closeSubpath()
+        qp.drawPath(hills)
+
+    @staticmethod
+    def _card(qp, card, style, t, px):
+        radius = max(1.5, 12 * px)
+        fill, line = qcolor(t["card"]), QPen(qcolor(t["brd"]), 1)
+        qp.setBrush(fill)
+        if style == 0:  # rounded
+            qp.setPen(line)
+            qp.drawRoundedRect(card, radius, radius)
+        elif style == 1:  # sharp
+            qp.setPen(line)
+            qp.drawRect(card)
+        elif style == 2:  # separator: a rule underneath
+            qp.setPen(Qt.PenStyle.NoPen)
+            qp.drawRect(card)
+            qp.setPen(QPen(qcolor(t["accent_brd"]), 1.5))
+            qp.drawLine(card.bottomLeft(), card.bottomRight())
+        elif style == 3:  # double border
+            qp.setPen(QPen(qcolor(t["accent_brd"]), 1))
+            qp.drawRoundedRect(card, radius, radius)
+            qp.setBrush(Qt.BrushStyle.NoBrush)
+            qp.drawRoundedRect(card.adjusted(2.2, 2.2, -2.2, -2.2), radius - 1.5, radius - 1.5)
+        else:  # none
+            qp.setPen(Qt.PenStyle.NoPen)
+            qp.drawRect(card)
+        qp.setPen(Qt.PenStyle.NoPen)
 
 
 class FitWidthScrollArea(QScrollArea):
