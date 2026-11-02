@@ -12,6 +12,8 @@ Open source on GitHub (screenshots, full documentation, changelog):
 
 - **Page preview** — a to-scale sketch of the page next to the Page options, with labelled margins, padding, gaps and line height.
 - **Portrait or landscape** pages.
+- **Tighter Legacy HTML grid** — cards packed into columns without holes.
+- Exported files open in front of Anki.
 - **Export info on/off** — hide the version line in the bottom-right corner of PDF pages.
 - Option tabs line up with the tab bar; the filter builder's pop-up lists no longer hide entries and scrolling no longer changes them.
 
