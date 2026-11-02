@@ -1,64 +1,81 @@
 # AnkiPdffer
 
-Export Anki decks to polished PDFs or standalone interactive HTML files.
+Export Anki decks to polished, print-ready PDFs or a single offline HTML file.
 
-AnkiPdffer turns flashcards into clean, readable documents for printing, offline study, sharing, and archiving.
+AnkiPdffer turns flashcards into clean documents for printing, offline study, sharing and archiving — real page layout, formulas, cloze highlighting and Image Occlusion, from a native-looking window inside Anki.
 
 <p align="center">
   <img src="docs/screenshots/window-content.png" width="49%" alt="AnkiPdffer export window, Content tab">
-  <img src="docs/screenshots/window-dark.png" width="49%" alt="AnkiPdffer export window in dark mode">
+  <img src="docs/screenshots/window-content-dark.png" width="49%" alt="The same window in dark mode">
 </p>
 
+**Install:** in Anki choose *Tools → Add-ons → Get Add-ons…* and enter **1987190048**, or download `AnkiPdffer-1.4.4.ankiaddon` from the [latest release](https://github.com/Janolm3/ankipdffer/releases/latest) and use *Install from file…*. Then open a deck and click **Export to PDF**, or use *Tools → AnkiPdffer*.
+
 ---
 
-## What's new in 1.4.4
+## Key Features
 
-- **Page preview**: the *Page* tab shows a to-scale sketch of the page — margins, padding, gaps, line height, image limit and page numbers, each marked and labelled; the option you are editing is highlighted on the sketch, and clicking a mark jumps to its option.
-- **Balanced option tabs**: on *Content* and *Appearance* the controls run from the *Content* tab's centre line to the *Settings* tab's.
+### Print-ready PDFs
+
+<p align="center">
+  <img src="docs/screenshots/pdf-page.png" width="62%" alt="An exported PDF page: cards with formulas, highlighted cloze answers and field labels">
+</p>
+
+- **Real page layout** (WeasyPrint): A4, A5, A3 or Letter in portrait or landscape, margins, card padding and gaps, page numbers. Cards break across pages only where it saves space, never inside a field.
+- **Formulas**: MathJax `\(…\)` and `\[…\]` are drawn as sharp vector graphics, inline with the text or centred for display math.
+- **Cloze**: answers highlighted in the theme colour or a colour of your choice, hidden as `[...]` for worksheets, or one card per cloze as in Anki.
+- **Looks**: light, dark and *Pro* themes, five card styles, compact or standard density, any system font.
+- **Preview PDF** renders exactly what *Export PDF* will save; the small export info in the corner (version, engine, mode) can be turned off.
+
+### See the Page While You Set It Up
+
+<p align="center">
+  <img src="docs/screenshots/window-page-dark.png" width="70%" alt="Page tab: options beside a to-scale page sketch with labelled margins, padding, gaps and line height">
+</p>
+
+The *Page* tab draws a to-scale sketch of a page next to its options — paper size and orientation, margins, padding, gaps, line height, image limit, page numbers and export info, each marked with a dimension line and its value. The option you are editing is highlighted on the sketch; point at a mark to find its option, click it to edit.
+
+### Filters Without Search Syntax
+
+<p align="center">
+  <img src="docs/screenshots/filter-builder.png" width="70%" alt="Filter builder: rows of property, condition and value with the matching card count">
+</p>
+
+Click the filter icon in the search field for **quick filters** (card state, flag, the deck's tags, note type, added or reviewed recently, difficult cards), or **Build filter…** (⌘⇧F) for a rule editor in the style of Mail rules: *property – condition – value*, matching all or any rows. The matching card count and the Anki search it produces update as you type. Any Anki search still works in the field itself.
+
+### Fields Your Way
+
+<p align="center">
+  <img src="docs/screenshots/window-fields.png" width="70%" alt="Fields tab: one row per field with section, size, style and label">
+</p>
+
+Choose, per note type, which fields go to the front, back or extra section and how each looks: size, bold / italic / underline, colours, alignment, label. Field presets copy a look from one note type to another, and note types whose cards show different fields (e.g. *Question 1* / *Question 2* with a shared *Context*) get one box per card.
+
+### Worksheets, Cloze and Image Occlusion
+
+- **Question / answer layouts**: together on one card, all questions followed by an answer key, or a question page followed by its answer page.
+- **Image Occlusion**: one page with every mask covering the image, the next with the masks removed and numbered.
+- **Cards mode** renders cards with Anki's own templates and CSS, for complex note types.
+
+### Also
+
+- **Export to PDF button** on Anki's deck screen, right below *Study Now*.
+- **Standalone HTML**: one offline file with embedded images and a fullscreen image viewer.
+- **One-click PDF engine setup** on macOS and Windows (Settings → PDF engine); a built-in fallback renderer works everywhere.
+- **Saves as you go**, with option presets and a one-click reset.
+- **10 interface languages**: English, Polski, Español, Português, Deutsch, Français, Italiano, Русский, 中文, 日本語.
+
+---
+
+## What's New in 1.4.4
+
+- **Page preview** with labelled dimensions that follows the option you are editing.
+- **Portrait or landscape** pages (*Page → Orientation*).
+- **Export info on/off**: hide the version / engine line in the bottom-right corner of PDF pages (*Page → Export info*).
+- **Option tabs aligned to the tab bar**: on *Content* and *Appearance* the controls run from the *Content* tab's centre line to the *Settings* tab's.
 - **Filter builder fixes**: pop-up lists no longer hide entries on macOS, and scrolling the rules no longer changes them.
 
-## What's new in 1.4.3
-
-- **Filter builder**: quick filters in the search field and a rule editor (⌘⇧F) with a live card count — no Anki search syntax needed.
-- **MathJax formulas** are drawn as sharp vector graphics, inline with the text.
-- **One box per card type** for note types whose cards show different fields (e.g. *Question 1* / *Question 2* with a shared *Context*).
-- **Cloze colour** of your choice for revealed answers.
-
-## What's new in 1.4.2
-
-- **Export to PDF button on the deck screen**, right below *Study Now*; it opens AnkiPdffer on that deck.
-- **PDF engine setup on Windows** (Python, Pango and WeasyPrint with one click), plus a quieter Settings tab and a faster-opening window.
-
-## What's new in 1.4.1
-
-- **Preview = the real PDF**, rendered exactly like the export.
-- **Smarter pagination**: cards continue on the next page only where it clearly saves space, never inside a field — compact exports have far less empty space.
-- **Clean links, uncropped images**, line breaks kept when stripping formatting.
-- **PDF engine setup** in Settings with one-click install, and a loader that stays in front.
-
-## What's new in 1.4.0
-
-- **Worksheets**: questions with an answer key, or a question page followed by its answer page.
-- **Image Occlusion pages**: one page with every mask hidden, the next with them revealed.
-- **Cloze modes**: hide answers as `[...]`, reveal them, or show both one after the other.
-- **Note type editor and field presets**: the Fields tab opens on the type of the card you are studying.
-- **Redesigned, responsive Mac-style window** with automatic saving, presets and 10 interface languages.
-
-Full list in the [CHANGELOG](CHANGELOG.md).
-
----
-
-## Highlights
-
-- **Print-ready PDF export** with A4, A5, A3, Letter, custom sizes, margins, padding, page numbers, and live preview.
-- **Worksheet layouts**: questions and answers together, all questions followed by an answer key, or a question page followed by its answer page.
-- **Image Occlusion pages**: one page with every mask covering the image, the next with the masks removed.
-- **Cloze modes**: reveal, hide as `[...]`, hidden-then-revealed, or Anki's native card-per-cloze.
-- **Per-note-type field settings** with field presets, automatic saving, option presets, and a one-click reset.
-- **Filter, order and count**: any Anki search, deck / creation / shuffled order, and a live card count.
-- **Standalone HTML export** as a single offline file with embedded images.
-- **Interface in 10 languages**: English, Polski, Español, Português, Deutsch, Français, Italiano, Русский, 中文, 日本語.
-- **Lightweight Mac-style window** (light and dark) that adapts to its size. Opening the add-on again restores the same window.
+Earlier: 1.4.3 added the filter builder, MathJax formulas, one box per card type and cloze colours; 1.4.2 the deck-screen button and Windows engine setup; 1.4.0 worksheets, Image Occlusion pages and the redesigned window. Full list in the [CHANGELOG](CHANGELOG.md).
 
 ---
 
@@ -70,7 +87,7 @@ Pick the deck, subdeck and an optional filter at the top; the footer shows how m
 | --- | --- |
 | **Content** | Source (fields or rendered cards), question / answer layout, cloze, Image Occlusion, order, title and numbers |
 | **Appearance** | Theme, font and size, card width, layout density, card style, zebra / high-contrast / grid options |
-| **Page** | Paper size, margins, padding, spacing, line height, image height, page numbers |
+| **Page** | Paper size and orientation, margins, padding, spacing, line height, image height, page numbers, export info — next to a to-scale preview |
 | **Fields** | Which field goes where and how it looks, per note type (Fields source only) |
 | **Settings** | Option presets, language, PDF engine setup, debug log, reset |
 
@@ -83,10 +100,6 @@ Everything is saved as you go — there is no *Save* button.
 ### Fields Mode
 
 Best for simple, uniform study sheets.
-
-<p align="center">
-  <img src="docs/screenshots/window-fields.png" width="70%" alt="Fields tab: one row per field with section, size, style and label">
-</p>
 
 Map Anki fields to:
 
@@ -154,6 +167,7 @@ Create polished, print-ready documents with:
 - Card spacing and padding
 - Compact layout options
 - Optional page numbers (`3 / 12`)
+- Optional export info in the bottom-right corner (version, engine, mode, note types)
 - Live PDF preview before export
 
 > [!TIP]

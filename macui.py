@@ -572,7 +572,7 @@ class PagePreview(QWidget):
     The option being edited (`set_focus`) is drawn strongly - tinted area, accent dimension line,
     filled label - and the others step back; the one under the pointer, in the form or here
     (`set_hover`, `hovered`), is marked lightly. Clicking a mark or label emits `picked`.
-    Keys: margin, top, padding, gap, lh, img, numbers, page.
+    Keys: margin, top, padding, gap, lh, img, numbers, info, page.
     """
 
     picked = pyqtSignal(str)
@@ -600,6 +600,7 @@ class PagePreview(QWidget):
         self._hits = []
         self._labels = []
         self._sheet = QRectF()
+        self._lanes = (0, [])
         self._want = 360
 
     def sizeHint(self):
@@ -717,7 +718,8 @@ class PagePreview(QWidget):
         _rounded(qp, sheet, 2, t["body"], "rgba(128,128,128,0.45)")
 
         margin, top = p["margin"], p["top"]
-        bottom = max(top, 12 if p["numbers"] else 9)
+        info = p.get("info", True)
+        bottom = max(top, 12) if p["numbers"] else max(top, 9) if info else top
         content = QRectF(sheet.left() + margin * scale, sheet.top() + top * scale,
                          sheet.width() - 2 * margin * scale,
                          sheet.height() - (top + bottom) * scale)
@@ -814,6 +816,17 @@ class PagePreview(QWidget):
             qp.setPen(Qt.PenStyle.NoPen)
             qp.setBrush(qcolor(t["mut"]))
             qp.drawRoundedRect(number, h / 2, h / 2)
+        info_bar = None
+        if info:  # the export info, small, in the bottom-right corner
+            h = max(1.2, 4 * px)
+            room = content.width() / 2 - (number.width() / 2 + 8 if number is not None else 0)
+            w = max(8.0, min(200 * px, room))
+            info_bar = QRectF(content.right() - w, sheet.bottom() - bottom * scale / 2 - h / 2, w, h)
+            colour = qcolor(t["mut"])
+            colour.setAlpha(150)
+            qp.setPen(Qt.PenStyle.NoPen)
+            qp.setBrush(colour)
+            qp.drawRoundedRect(info_bar, h / 2, h / 2)
 
         # what each option controls: areas to tint (and to point at), dimension lines, label anchors
         areas = {
@@ -825,16 +838,13 @@ class PagePreview(QWidget):
             # every other line: the rhythm of the line height, with a free line between two bands
             "lh": lh_bands[::2],
             "img": [image_rect] if image_rect is not None else [],
-            "numbers": [number.adjusted(-4, -3, 4, 3)] if number is not None else [],
+            # page numbers and export info are too small for a box: they light up themselves
             "page": [],
         }
         dims = []  # (key, start, end, anchor)
         x = sheet.right() - margin * scale / 2
         dims.append(("top", QPointF(x, sheet.top()), QPointF(x, content.top()),
                      QPointF(x, (sheet.top() + content.top()) / 2)))
-        y = content.top() + content.height() * 0.5
-        dims.append(("margin", QPointF(content.right(), y), QPointF(sheet.right(), y),
-                     QPointF((content.right() + sheet.right()) / 2, y)))
         padding_ring = None
         if cards:
             card, inner = cards[0]
@@ -857,8 +867,24 @@ class PagePreview(QWidget):
             x = image_rect.right() + max(3.0, 4 * px)
             dims.append(("img", QPointF(x, image_rect.top()), QPointF(x, image_rect.bottom()),
                          QPointF(x, image_rect.center().y())))
+        starts = {}  # leaders that leave their mark sideways before running right
         if number is not None:
-            dims.append(("numbers", None, None, QPointF(number.right() + 3, number.center().y())))
+            anchor = QPointF(number.right() + 3, number.center().y())
+            if info_bar is not None:  # run under the export info, not through it
+                starts["numbers"] = QPointF(number.center().x(), number.bottom() + 1)
+                lane = (max(number.bottom(), info_bar.bottom()) + 0.6 + sheet.bottom()) / 2
+                anchor = QPointF(number.center().x(), lane)
+            dims.append(("numbers", None, None, anchor))
+        if info_bar is not None:
+            dims.append(("info", None, None, QPointF(info_bar.right() + 3, info_bar.center().y())))
+        # the side margin is measured where no other leader crosses the margin, so no two lines
+        # ever run along each other
+        taken = [anchor.y() for _, _, _, anchor in dims]
+        y = max((content.top() + content.height() * k / 12 for k in range(2, 11)),
+                key=lambda c: (min([abs(c - t) for t in taken] or [1e9]), -abs(c - content.center().y())))
+        dims.append(("margin", QPointF(content.right(), y), QPointF(sheet.right(), y),
+                     QPointF((content.right() + sheet.right()) / 2, y)))
+        self._lanes = (y, taken)
 
         active = any(self._level(k) == 2 for k in notes) or self._focus == "page"
         shapes = {1: QPainterPath(), 2: QPainterPath()}
@@ -888,6 +914,15 @@ class PagePreview(QWidget):
             qp.setPen(QPen(edge, 1))
             qp.setBrush(fill)
             qp.drawPath(shapes[level])
+        for key, mark in (("numbers", number), ("info", info_bar)):
+            level = self._level(key)
+            if mark is not None and level:
+                lit = QColor(accent)
+                lit.setAlpha(255 if level == 2 else 150)
+                qp.setPen(Qt.PenStyle.NoPen)
+                qp.setBrush(lit)
+                grown = mark.adjusted(-0.6, -0.6, 0.6, 0.6)
+                qp.drawRoundedRect(grown, grown.height() / 2, grown.height() / 2)
         if self._level("page"):
             qp.setPen(QPen(accent, 2 if self._level("page") == 2 else 1))
             qp.setBrush(Qt.BrushStyle.NoBrush)
@@ -910,14 +945,16 @@ class PagePreview(QWidget):
             lead = QColor(accent) if level else qcolor(pal["secondary"])
             lead.setAlpha(255 if level else (60 if active else 120))
             qp.setPen(QPen(lead, 1.2 if level == 2 else 0.8))
-            path = QPainterPath(anchor)
+            start = starts.get(key, anchor)
+            path = QPainterPath(start)
+            path.lineTo(anchor)
             path.lineTo(QPointF(max(anchor.x(), sheet.right()) + 6, anchor.y()))
             path.lineTo(QPointF(label_x - 4, ly))
             qp.setBrush(Qt.BrushStyle.NoBrush)
             qp.drawPath(path)
             qp.setPen(Qt.PenStyle.NoPen)
             qp.setBrush(lead)
-            qp.drawEllipse(anchor, 2.0 if level == 2 else 1.6, 2.0 if level == 2 else 1.6)
+            qp.drawEllipse(start, 2.0 if level == 2 else 1.6, 2.0 if level == 2 else 1.6)
             text = notes[key]
             box = QRectF(label_x, ly - line_h / 2, metrics.horizontalAdvance(text) + 12, line_h)
             qp.setFont(self._note_font(level == 2))
@@ -947,7 +984,10 @@ class PagePreview(QWidget):
         qp.end()
 
         # what the pointer can pick on the sheet: small, specific marks before the large areas
-        for key in ("img", "numbers", "gap"):
+        for key, mark in (("numbers", number), ("info", info_bar)):
+            if mark is not None:
+                hits.append((mark.adjusted(-3, -3, 3, 3), key))
+        for key in ("img", "gap"):
             hits.extend((rect.adjusted(-2, -2, 2, 2), key) for rect in areas[key])
         if lh_span:
             y0, y1, card = lh_span

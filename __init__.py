@@ -1539,6 +1539,21 @@ class PDFExportDialog(QDialog):
         box.setProperty("spans", True)
         return box
 
+    @staticmethod
+    def _check_row(form, label_key, tip_key=None):
+        """A checkbox row with its text in the label column and the box where the controls
+        start; clicking the label toggles it, as a checkbox's own text would."""
+        box = QCheckBox()
+        label = macui.form_label(_t(label_key))
+        box.setAccessibleName(_t(label_key).rstrip(":\uff1a "))
+        label.setBuddy(box)
+        label.mousePressEvent = lambda e: box.click()
+        if tip_key:
+            for w in (label, box):
+                w.setToolTip(_t(tip_key))
+        form.addRow(label, box)
+        return box
+
     def _show_width_spin(self, visible):
         if hasattr(self._width_form, "setRowVisible"):
             self._width_form.setRowVisible(self._width_row, visible)
@@ -1548,6 +1563,8 @@ class PDFExportDialog(QDialog):
         page, form = self._form_page()
         self.page_combo = self._popup(["A4", "Letter", "A3", "A5"], 92)
         form.addRow(_t("lbl_page"), self.page_combo)
+        self.orient_radio = macui.SegmentedControl([_t("orient_portrait"), _t("orient_landscape")], default=0)
+        form.addRow(_t("lbl_orientation"), self.orient_radio)
         self.margin_spin = self._spin(5, 40, 15, " mm")
         form.addRow(_t("lbl_margins"), self.margin_spin)
         self.top_margin_spin = self._spin(0, 40, 15, " mm")
@@ -1565,26 +1582,27 @@ class PDFExportDialog(QDialog):
         self.img_h_spin = self._spin(60, 800, 240, " px")
         form.addRow(_t("lbl_maximg"), self.img_h_spin)
         form.addRow(macui.separator())
-        # label in the label column, the box where the other controls start
-        self.page_numbers_cb = QCheckBox()
-        self.page_numbers_cb.setAccessibleName(_t("cb_page_numbers"))
-        numbers_lbl = macui.form_label(_t("lbl_page_numbers"))
-        numbers_lbl.setBuddy(self.page_numbers_cb)
-        numbers_lbl.mousePressEvent = lambda e: self.page_numbers_cb.click()  # like a checkbox's own text
-        form.addRow(numbers_lbl, self.page_numbers_cb)
+        self.page_numbers_cb = self._check_row(form, "lbl_page_numbers")
+        self.export_info_cb = self._check_row(form, "lbl_export_info", "tip_export_info")
+        self.export_info_cb.setChecked(True)
 
         # a to-scale sketch of the page next to the options. The option being edited (focused or
         # changed last) is drawn strongly; hovering an option or a mark on the sketch links the
         # two, and clicking a mark moves the focus to its option
         self.page_preview = macui.PagePreview()
         outer = page.layout()
-        outer.insertSpacing(2, 44)
+        outer.insertSpacing(2, 36)
         outer.insertWidget(3, self.page_preview)
         self._preview_widgets = {
             "margin": self.margin_spin, "top": self.top_margin_spin, "padding": self.padding_spin,
             "gap": self.gap_spin, "lh": self.lh_spin, "img": self.img_h_spin,
-            "numbers": self.page_numbers_cb, "page": self.page_combo}
+            "numbers": self.page_numbers_cb, "info": self.export_info_cb, "page": self.page_combo}
         self._preview_keys = {}  # control (and a spin box's line edit, which takes its focus) -> key
+        for button in self.orient_radio.buttons:  # orientation is part of the paper
+            self._preview_keys[button] = "page"
+            button.installEventFilter(self)
+        self.orient_radio.group.idToggled.connect(
+            lambda _i, on: on and not self._loading and self.page_preview.set_focus("page"))
         for key, widget in self._preview_widgets.items():
             self._preview_keys[widget] = key
             if isinstance(widget, QAbstractSpinBox):
@@ -1602,9 +1620,9 @@ class PDFExportDialog(QDialog):
             widget.valueChanged.connect(self._update_page_preview)
         for widget in (self.page_combo, self.card_style_combo):
             widget.currentIndexChanged.connect(self._update_page_preview)
-        for widget in (self.page_numbers_cb, self.show_title_cb, self.card_numbers_cb):
+        for widget in (self.page_numbers_cb, self.export_info_cb, self.show_title_cb, self.card_numbers_cb):
             widget.toggled.connect(self._update_page_preview)
-        for group in (self.theme_radio, self.width_radio):
+        for group in (self.theme_radio, self.width_radio, self.orient_radio):
             group.group.idToggled.connect(self._update_page_preview)
         self._update_page_preview()
         return page
@@ -1615,6 +1633,8 @@ class PDFExportDialog(QDialog):
         if not all(hasattr(self, name) for name in needed):
             return  # still building the window
         name = self.page_combo.currentText()
+        if self._landscape():
+            name = "{} \u00b7 {}".format(name, _t("orient_landscape"))
 
         def note(key, spin):  # "Margins 15 mm": the form's own label and the value as shown
             return "{} {}".format(_t(key).rstrip(":\uff1a ").strip(), spin.text())
@@ -1627,12 +1647,15 @@ class PDFExportDialog(QDialog):
                  "img": note("lbl_maximg", self.img_h_spin)}
         if self.page_numbers_cb.isChecked():
             notes["numbers"] = _t("cb_page_numbers")
+        if self.export_info_cb.isChecked():
+            notes["info"] = _t("lbl_export_info").rstrip(":\uff1a ").strip()
         self.page_preview.set_params(
             notes=notes,
-            name=name, size=PAGE_SIZES.get(name, (210, 297)),
+            name=name, size=self._get_page_dims(),
             margin=self.margin_spin.value(), top=self.top_margin_spin.value(),
             padding=self.padding_spin.value(), gap=self.gap_spin.value(), lh=self.lh_spin.value(),
             img=self.img_h_spin.value(), numbers=self.page_numbers_cb.isChecked(),
+            info=self.export_info_cb.isChecked(),
             font=self.fontsize_spin.value(), card_width=self._get_card_max_width(),
             style=self.card_style_combo.currentIndex(), title=self.show_title_cb.isChecked(),
             card_numbers=self.card_numbers_cb.isChecked(),
@@ -2735,8 +2758,17 @@ class PDFExportDialog(QDialog):
         dlg.exec()
 
     # ------------------------------------------------------------------ helpers
+    def _landscape(self):
+        return hasattr(self, "orient_radio") and self.orient_radio.currentIndex() == 1
+
     def _get_page_dims(self):
-        return PAGE_SIZES.get(self.page_combo.currentText(), (210, 297))
+        """(width, height) in mm, turned for landscape."""
+        w, h = PAGE_SIZES.get(self.page_combo.currentText(), (210, 297))
+        return (h, w) if self._landscape() else (w, h)
+
+    def _page_css_size(self):
+        """CSS @page size: "A4" or "A4 landscape"."""
+        return self.page_combo.currentText() + (" landscape" if self._landscape() else "")
 
     @staticmethod
     def _vendor_dir():
@@ -3553,7 +3585,7 @@ class PDFExportDialog(QDialog):
             size = QPageSize(ps_map.get(self.page_combo.currentText(), QPageSize.PageSizeId.A4))
             layout = QPageLayout(
                 size,
-                QPageLayout.Orientation.Portrait,
+                QPageLayout.Orientation.Landscape if self._landscape() else QPageLayout.Orientation.Portrait,
                 QMarginsF(0, 0, 0, 0),
                 QPageLayout.Unit.Millimeter,
             )
@@ -3582,7 +3614,7 @@ class PDFExportDialog(QDialog):
                 size = QPageSize(psid_val)
                 layout = QPageLayout(
                     size,
-                    QPageLayout.Orientation.Portrait,
+                    QPageLayout.Landscape if self._landscape() else QPageLayout.Portrait,
                     QMarginsF(0, 0, 0, 0),
                     QPageLayout.Unit.Millimeter,
                 )
@@ -3671,6 +3703,7 @@ class PDFExportDialog(QDialog):
             "card_numbers": self.card_numbers_cb.isChecked(),
             "zebra": self.zebra_cb.isChecked(),
             "page": self.page_combo.currentIndex(),
+            "orientation": self.orient_radio.currentIndex(),
             "margins": self.margin_spin.value(),
             "top_margin": self.top_margin_spin.value(),
             "padding": self.padding_spin.value(),
@@ -3690,6 +3723,7 @@ class PDFExportDialog(QDialog):
             "io_mode": self.io_combo.currentIndex(),
             "order": self.order_combo.currentIndex(),
             "page_numbers": self.page_numbers_cb.isChecked(),
+            "export_info": self.export_info_cb.isChecked(),
             "tab": self.tabs.currentIndex(),
         }
 
@@ -3715,6 +3749,7 @@ class PDFExportDialog(QDialog):
             self.card_numbers_cb.setChecked(s["card_numbers"])
             self.zebra_cb.setChecked(s["zebra"])
             self._set_combo(self.page_combo, s["page"])
+            self.orient_radio.setCurrentIndex(s["orientation"])
             self.margin_spin.setValue(s["margins"])
             self.top_margin_spin.setValue(s["top_margin"])
             self.padding_spin.setValue(s["padding"])
@@ -3733,6 +3768,7 @@ class PDFExportDialog(QDialog):
             self._set_combo(self.io_combo, s["io_mode"])
             self._set_combo(self.order_combo, s["order"])
             self.page_numbers_cb.setChecked(s["page_numbers"])
+            self.export_info_cb.setChecked(s["export_info"])
             if 0 <= s["tab"] < self.stack.count() and self.tabs.buttons[s["tab"]].isVisibleTo(self.tabs):
                 self.tabs.setCurrentIndex(s["tab"])
             self.lang_combo.blockSignals(True)
@@ -3744,11 +3780,12 @@ class PDFExportDialog(QDialog):
 
     def _connect_autosave(self):
         sched = self._schedule_save
-        for rg in (self.theme_radio, self.width_radio, self.layout_radio, self.render_radio, self.tabs):
+        for rg in (self.theme_radio, self.width_radio, self.layout_radio, self.render_radio, self.orient_radio,
+                   self.tabs):
             rg.group.idToggled.connect(sched)
         for cb in (self.show_title_cb, self.card_numbers_cb, self.zebra_cb, self.high_contrast_cb,
                    self.strip_html_cb, self.grid_cb, self.debug_cb, self.page_numbers_cb,
-                   self.overview_cb):
+                   self.export_info_cb, self.overview_cb):
             cb.toggled.connect(sched)
         for sp in (self.fontsize_spin, self.width_spin, self.margin_spin, self.top_margin_spin,
                    self.padding_spin, self.gap_spin, self.lh_spin, self.img_h_spin):
@@ -3883,7 +3920,7 @@ class PDFExportDialog(QDialog):
         card_gap = css_gap
         lh = self.lh_spin.value()
         img_h = self.img_h_spin.value()
-        ps = self.page_combo.currentText()
+        ps = self._page_css_size()
         mg = self.margin_spin.value()
         top_mg = self.top_margin_spin.value()
         show_title = self.show_title_cb.isChecked()
@@ -3933,7 +3970,9 @@ class PDFExportDialog(QDialog):
             if font_info.get("label") == "Inter" else ""  # System etc. only *list* Inter
         )
         page_numbers = self.page_numbers_cb.isChecked() and mode == "pdf"
-        bottom_mm = max(top_mg, 12) if page_numbers else max(top_mg, 9)
+        export_info = self.export_info_cb.isChecked()
+        # the bottom margin leaves room for what sits in it: page numbers, the export info
+        bottom_mm = max(top_mg, 12) if page_numbers else max(top_mg, 9) if export_info else top_mg
         engine_name = {"pdf": "WeasyPrint", "pdf_fallback": "Qt WebEngine"}.get(mode)
         generator = " \u00b7 ".join(filter(None, [
             "{} {}".format(TOOL_NAME, _addon_version()),
@@ -3944,6 +3983,7 @@ class PDFExportDialog(QDialog):
         generator_css = (
             "@bottom-right{{content:\"__PDFFER_GENERATOR__\";font-family:{f};font-size:7px;color:{c};"
             "opacity:.75}}".format(f=font, c=t["mut"])
+            if export_info else ""
         )
         page_num_css = (
             "@bottom-center{{content:counter(page) ' / ' counter(pages);"
