@@ -10,7 +10,8 @@ Open source on GitHub (screenshots, full documentation, changelog):
 
 ## New in 1.4.4
 
-- Option tabs are evenly centred; the filter builder's pop-up lists no longer hide entries on macOS.
+- **Page preview** — a to-scale sketch of the page next to the Page options, with labelled margins, padding, gaps and line height.
+- Option tabs line up with the tab bar; the filter builder's pop-up lists no longer hide entries and scrolling no longer changes them.
 
 ## New in 1.4.3
 

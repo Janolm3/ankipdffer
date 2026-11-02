@@ -4,11 +4,17 @@ All notable changes to the **AnkiPdffer Dev** add-on will be documented in this 
 
 ## [1.4.4] - 2026-11-01
 
+### Added
+- **Page preview**: the *Page* tab shows a to-scale sketch of a page next to its options — paper size, margins, card padding, gaps, line height, the image limit and page numbers (with the theme, font size, card width and card style from the other tabs). Dimension lines lead to labelled values beside the sheet. The option being edited is drawn strongly (tinted area, filled label) while the rest steps back; pointing at an option or at a mark on the sketch links the two, and clicking a mark jumps to its option. Labels keep a fixed distance from each other and highlighted areas never run together. The sketch grows and shrinks with the window.
+
 ### Changed
-- Option tabs are centred with equal margins on both sides (and vertically). On the *Content* tab the line through the middle of the *Content* tab button is the left edge of the *Fields* box: the control column is sized for that, independently of the window size.
+- Option tabs: on *Content* and *Appearance* the control column runs from the line through the middle of the *Content* tab button to the line through the middle of *Settings*, with the labels to its left; the other forms are centred with equal margins. *Appearance*'s font row and width control share that column, and the custom width field appears under the width control.
+- The tab selector is a little wider, with more room around each tab name.
+- Page tab: *Page numbers* is labelled in the label column like the other options, with its checkbox where the controls start.
 
 ### Fixed
 - Filter builder: the pop-up lists were narrower than their buttons on macOS, which elided entries (choosing *any* made *all* disappear).
+- Filter builder: scrolling the list of rules no longer changes the pop-up or number under the pointer.
 
 ## [1.4.3] - 2026-11-01
 

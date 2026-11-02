@@ -308,10 +308,9 @@ class _Combo(QComboBox):
         self._pal = pal
 
     def wheelEvent(self, e):
-        if self.hasFocus():
-            super().wheelEvent(e)
-        else:
-            e.ignore()
+        # the wheel belongs to the list of rules: a pop-up that kept the focus after a choice used to
+        # change its selection (and rebuild its row) while the list was being scrolled
+        e.ignore()
 
     def polish(self):
         macui.round_popup(self, self._pal)
@@ -323,6 +322,11 @@ class _Combo(QComboBox):
         view = self.view()
         view.setMinimumWidth(max(self.width(), view.sizeHintForColumn(0) + 32))
         super().showPopup()
+
+
+class _Spin(QSpinBox):
+    def wheelEvent(self, e):
+        e.ignore()  # see _Combo.wheelEvent
 
 
 class _Row(QWidget):
@@ -407,7 +411,7 @@ class _Row(QWidget):
         return edit
 
     def _spin(self, value, lo, hi, suffix=""):
-        spin = QSpinBox()
+        spin = _Spin()
         spin.setRange(lo, hi)
         spin.setValue(int(value))
         spin.setAlignment(Qt.AlignmentFlag.AlignRight)
