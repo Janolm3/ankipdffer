@@ -45,7 +45,9 @@ _STRINGS = {
         "deck_lbl": "Deck:",
         "subdeck_lbl": "Subdeck:",
         "entire_deck": "(Entire deck)",
-        "all_subdecks": "Every subdeck → separate PDFs",
+        "lbl_subdecks": "Subdecks:",
+        "cb_subdeck_pdfs": "Separate PDF for each",
+        "tip_subdeck_pdfs": "Export PDF writes one file per subdeck of the selected deck into a folder you choose. Each file holds the cards of that one deck.",
         "tab_basic": "⚡ Basic",
         "tab_advanced": "🔧 Advanced",
         "tab_fields": "📋 Fields",
@@ -156,7 +158,9 @@ _STRINGS = {
         "deck_lbl": "Deck:",
         "subdeck_lbl": "Subdeck:",
         "entire_deck": "(Cały deck)",
-        "all_subdecks": "Każdy poddeck → osobne PDF-y",
+        "lbl_subdecks": "Poddecki:",
+        "cb_subdeck_pdfs": "Osobny PDF dla każdego",
+        "tip_subdeck_pdfs": "Eksport PDF zapisuje do wybranego folderu osobny plik dla każdego poddecku wybranego decku. Każdy plik zawiera karty tylko z tego jednego decku.",
         "tab_basic": "⚡ Podstawowe",
         "tab_advanced": "🔧 Zaawansowane",
         "tab_fields": "📋 Pola",
@@ -1279,7 +1283,6 @@ class PDFExportDialog(QDialog):
         self._base_busy_message = ""
         self._batch = None  # state of a one-PDF-per-subdeck export while it runs
         self._batch_deck = None  # the deck being exported by the batch (what _sel() returns)
-        self._batch_index = -1  # index of the "every subdeck" picker entry, -1 when absent
 
         screen = QApplication.primaryScreen()
         if screen:
@@ -1531,6 +1534,10 @@ class PDFExportDialog(QDialog):
         self.show_title_cb.setChecked(True)
         self.card_numbers_cb = QCheckBox(_t("cb_numbers"))
         form.addRow(_t("lbl_show"), self._hrow(self.show_title_cb, 10, self.card_numbers_cb))
+        # not a saved setting: it changes what Export PDF does, so every window starts with it off
+        self.subdeck_pdfs_cb = QCheckBox(_t("cb_subdeck_pdfs"))
+        self.subdeck_pdfs_cb.setToolTip(_t("tip_subdeck_pdfs"))
+        form.addRow(self._tip_label(_t("lbl_subdecks"), _t("tip_subdeck_pdfs")), self.subdeck_pdfs_cb)
         return page
 
     def _build_appearance_tab(self):
@@ -2422,7 +2429,6 @@ class PDFExportDialog(QDialog):
         rn = self.deck_combo.currentText()
         if not rn:
             self.subdeck_combo.clear()
-            self._batch_index = -1
             self._load_fields()
             self._update_count()
             return
@@ -2430,11 +2436,6 @@ class PDFExportDialog(QDialog):
         self.subdeck_combo.clear()
         self.subdeck_combo.addItem(_t("entire_deck"), rn)
         pfx = rn + "::"
-        self._batch_index = -1
-        if any(d.name.startswith(pfx) for d in self._all_decks):
-            # empty data: _sel() keeps returning the root deck while this entry is selected
-            self.subdeck_combo.addItem(_t("all_subdecks"), "")
-            self._batch_index = self.subdeck_combo.count() - 1
         for d in self._all_decks:
             if d.name.startswith(pfx):
                 sub_name = d.name[len(pfx):]
@@ -2474,16 +2475,27 @@ class PDFExportDialog(QDialog):
         d = self.subdeck_combo.currentData()
         return d if d else self.deck_combo.currentText()
 
+    def _has_subdecks(self):
+        pfx = self._sel() + "::"
+        return any(d.name.startswith(pfx) for d in self._all_decks)
+
     def _batch_selected(self):
-        return self._batch_index >= 0 and self.subdeck_combo.currentIndex() == self._batch_index
+        """Export PDF writes one file per subdeck: the Content switch is on and there are subdecks."""
+        return self.subdeck_pdfs_cb.isChecked() and self._has_subdecks()
 
     def _on_subdeck_changed(self, *_):
+        self.subdeck_pdfs_cb.setEnabled(self._has_subdecks())
         self._load_fields()
         self._update_count()
 
     # -------------------------------------------------------------- searching
-    def _search_query(self, dn=None):
-        query = _deck_query(dn or self._sel())
+    def _search_query(self, dn=None, own=False):
+        """Search for a deck and its subdecks plus the filter; `own` (and every deck of a
+        one-PDF-per-subdeck export) leaves the subdecks out."""
+        dn = dn or self._sel()
+        query = _deck_query(dn)
+        if own or self._batch_deck:
+            query = '{} -"deck:{}::*"'.format(query, _SEARCH_ESCAPE_RE.sub(r'\\\1', dn))
         extra = self.filter_edit.text().strip()
         return "{} ({})".format(query, extra) if extra else query
 
@@ -3380,21 +3392,28 @@ class PDFExportDialog(QDialog):
 
     # ------------------------------------------------------- batch: one PDF per subdeck
     def _batch_targets(self):
-        """Direct children of the selected root deck that have cards under the current filter."""
-        pfx = self.deck_combo.currentText() + "::"
+        """The selected deck and every deck below it that holds cards of its own under the
+        current filter. Each becomes one file with that deck's own cards, so nothing is doubled."""
+        root = self._sel()
+        pfx = root + "::"
         out = []
         for d in self._all_decks:
-            if d.name.startswith(pfx) and "::" not in d.name[len(pfx):]:
+            if d.name == root or d.name.startswith(pfx):
                 try:
-                    if mw.col.find_cards(self._search_query(d.name)):
+                    if mw.col.find_cards(self._search_query(d.name, own=True)):
                         out.append(d.name)
                 except Exception as e:
                     logger.error("Batch search", e)
         return out
 
-    def _batch_path(self, folder, deck, used):
-        """A new .pdf path in `folder` for `deck`: never an existing file nor one used in this batch."""
-        base = self._safe_filename(deck.split("::")[-1])
+    @staticmethod
+    def _batch_name(root, deck):
+        """A deck's name as seen from the selected deck: "KOLOKWIUM - ZESTAW 1"."""
+        return " - ".join(deck[len(root) + 2:].split("::")) if deck != root else root.split("::")[-1]
+
+    def _batch_path(self, folder, name, used):
+        """A new .pdf path in `folder` for `name`: never an existing file nor one used in this batch."""
+        base = self._safe_filename(name)
         path = os.path.join(folder, base + ".pdf")
         n = 2
         while os.path.exists(path) or path in used:
@@ -3413,7 +3432,7 @@ class PDFExportDialog(QDialog):
             return
         _store.update_settings({"export_dir": folder})
         _store.save()
-        self._batch = {"targets": targets, "folder": folder, "i": 0, "name": "", "used": set(),
+        self._batch = {"targets": targets, "root": self._sel(), "folder": folder, "i": 0, "name": "", "used": set(),
                        "saved": 0, "failed": 0, "path": None}
         self._batch_next()
 
@@ -3421,8 +3440,8 @@ class PDFExportDialog(QDialog):
         b = self._batch
         deck = b["targets"][b["i"]]
         b["i"] += 1
-        b["name"] = deck.split("::")[-1]
-        b["path"] = self._batch_path(b["folder"], deck, b["used"])
+        b["name"] = self._batch_name(b["root"], deck)
+        b["path"] = self._batch_path(b["folder"], b["name"], b["used"])
         self._batch_deck = deck
         self._export_pdf_to(b["path"])
 

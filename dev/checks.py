@@ -1065,42 +1065,46 @@ def check_batch_subdecks(col, load_addon, pick):
     dlg = mod.PDFExportDialog(mw)
     dlg._apply_settings(mod.DEFAULT_SETTINGS)
 
+    cb = dlg.subdeck_pdfs_cb
     pick(dlg, "Lab")
-    ok(dlg.subdeck_combo.itemText(1) == mod._t("all_subdecks") and dlg.subdeck_combo.itemData(1) == "",
-       "a deck with subdecks offers the batch entry right after the entire deck")
-    ok(not dlg._batch_selected(), "the batch entry is not selected by default")
-    ok(dlg.subdeck_combo.findData("Lab::Long") > 1, "real subdecks follow the batch entry")
-    dlg.subdeck_combo.setCurrentIndex(1)
-    ok(dlg._batch_selected() and dlg._sel() == "Lab", "batch entry selected: _sel() is still the root deck")
-    dlg.subdeck_combo.setCurrentIndex(0)
-    ok(not dlg._batch_selected() and dlg._sel() == "Lab", "entire deck selected: not a batch")
+    ok(dlg.subdeck_combo.findData("Lab::Long") == 1 + sorted(
+        d.name for d in dlg._all_decks if d.name.startswith("Lab::")).index("Lab::Long"),
+       "the subdeck picker has no extra entry")
+    ok(cb.isEnabled() and not cb.isChecked() and not dlg._batch_selected(),
+       "Content has the switch, off by default, enabled for a deck with subdecks")
+    cb.setChecked(True)
+    ok(dlg._batch_selected() and dlg._sel() == "Lab", "switch on: Export PDF is a batch of the selected deck")
     pick(dlg, "Lab::Images")
-    ok(dlg._sel() == "Lab::Images" and not dlg._batch_selected(), "a real subdeck still selects normally")
+    ok(not cb.isEnabled() and not dlg._batch_selected(), "a deck without subdecks: switch disabled, plain export")
+    pick(dlg, "Pharma::Cardio")
+    ok(cb.isEnabled() and dlg._batch_selected(), "a subdeck with subdecks of its own can be split too")
+    targets = dlg._batch_targets()
+    ok("Pharma::Cardio::ACE" in targets and all(t == "Pharma::Cardio" or t.startswith("Pharma::Cardio::")
+                                                for t in targets),
+       "targets stay below the selected deck ({})".format(targets))
     pick(dlg, "Pharma")
-    dlg.subdeck_combo.setCurrentIndex(1)
-    ok(dlg._batch_selected(), "Pharma has subdecks too")
-    ok(dlg._batch_targets() == ["Pharma::Cardio"],
-       "targets are direct children only (Cardio::ACE is part of Cardio's file)")
+    targets = dlg._batch_targets()
+    ok("Pharma::Cardio::ACE" in targets, "nested subdecks are targets of their own ({})".format(targets))
+    own = [len(col.find_cards(dlg._search_query(t, own=True))) for t in targets]
+    ok(all(own) and sum(own) == len(col.find_cards(dlg._search_query("Pharma"))),
+       "every card of the deck is in exactly one file ({})".format(own))
+    ok(mod.PDFExportDialog._batch_name("Pharma", "Pharma::Cardio::ACE") == "Cardio - ACE"
+       and mod.PDFExportDialog._batch_name("Pharma", "Pharma") == "Pharma",
+       "files are named by the path below the selected deck")
     pick(dlg, "Lab")
-    dlg.subdeck_combo.setCurrentIndex(1)
     targets = dlg._batch_targets()
     ok(sorted(targets) == ["Lab::Dual", "Lab::Images", "Lab::Long", "Lab::Math"],
-       "Lab: every direct subdeck with cards ({})".format(targets))
+       "Lab: every subdeck with cards ({})".format(targets))
     dlg.filter_edit.setText("zzzz-no-such-text")
     ok(dlg._batch_targets() == [], "the filter applies: subdecks without matching cards are skipped")
     dlg.filter_edit.setText("")
-    for i in range(dlg.deck_combo.count()):
-        dlg.deck_combo.setCurrentIndex(i)
-        has = any(d.name.startswith(dlg.deck_combo.currentText() + "::") for d in dlg._all_decks)
-        ok((dlg._batch_index >= 0) == has, "batch entry only for decks with subdecks ({})".format(
-            dlg.deck_combo.currentText()))
 
     folder = tempfile.mkdtemp(prefix="pdffer-batch-")
     try:
         used = set()
         open(os.path.join(folder, "Long.pdf"), "w").close()
-        paths = [dlg._batch_path(folder, "Lab::Long", used) for _ in range(3)] + \
-                [dlg._batch_path(folder, "Lab::Images", used)]
+        paths = [dlg._batch_path(folder, "Long", used) for _ in range(3)] + \
+                [dlg._batch_path(folder, "Images", used)]
         ok(paths == [os.path.join(folder, n) for n in ("Long 2.pdf", "Long 3.pdf", "Long 4.pdf", "Images.pdf")],
            "file names: existing and repeated names get ' 2', ' 3' ... ({})".format(
                [os.path.basename(p) for p in paths]))
@@ -1110,7 +1114,7 @@ def check_batch_subdecks(col, load_addon, pick):
         out = os.path.join(folder, "out")
         os.mkdir(out)
         pick(dlg, "Lab")
-        dlg.subdeck_combo.setCurrentIndex(1)
+        cb.setChecked(True)
         opened = []
 
         class FakeDesktop:

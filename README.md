@@ -25,7 +25,7 @@ AnkiPdffer turns flashcards into clean documents for printing, offline study, sh
 - **Formulas**: MathJax `\(…\)` and `\[…\]` are drawn as sharp vector graphics, inline with the text or centred for display math.
 - **Cloze**: answers highlighted in the theme colour or a colour of your choice, hidden as `[...]` for worksheets, or one card per cloze as in Anki.
 - **Looks**: light, dark and *Pro* themes, five card styles, compact or standard density, any system font.
-- **One PDF per subdeck**: *Every subdeck → separate PDFs* in the subdeck picker writes a file for each direct subdeck into a folder you choose.
+- **One PDF per subdeck**: *Content → Subdecks → Separate PDF for each* makes *Export PDF* write a file for every subdeck of the selected deck into a folder you choose.
 - **Preview PDF** renders exactly what *Export PDF* will save; the small export info in the corner (version, engine, mode) can be turned off.
 
 ### See the Page While You Set It Up
@@ -70,7 +70,7 @@ Choose, per note type, which fields go to the front, back or extra section and h
 
 ## What's New in 1.4.5
 
-- **One PDF per subdeck**: pick *Every subdeck → separate PDFs* in the subdeck picker, click *Export PDF* and choose a folder; each direct subdeck gets its own file (nested subdecks included), with your filter and options applied.
+- **One PDF per subdeck**: pick a deck or subdeck, switch on *Content → Subdecks → Separate PDF for each*, click *Export PDF* and choose a folder; every subdeck below it gets its own file (*KOLOKWIUM - ZESTAW 1.pdf*, …), with your filter and options applied.
 
 Earlier: 1.4.4 added the page preview, portrait or landscape pages, a tighter Legacy HTML grid and the export info switch; 1.4.3 added the filter builder, MathJax formulas, one box per card type and cloze colours; 1.4.2 the deck-screen button and Windows engine setup; 1.4.0 worksheets, Image Occlusion pages and the redesigned window. Full list in the [CHANGELOG](CHANGELOG.md).
 
@@ -78,11 +78,11 @@ Earlier: 1.4.4 added the page preview, portrait or landscape pages, a tighter Le
 
 ## The Window
 
-Pick the deck, subdeck and an optional filter at the top (*Every subdeck → separate PDFs* makes *Export PDF* write one file per direct subdeck into a folder; Preview and Legacy HTML still use the whole deck); the footer shows how many cards and notes will be exported. Options are grouped in five tabs:
+Pick the deck, subdeck and an optional filter at the top; the footer shows how many cards and notes will be exported. Options are grouped in five tabs:
 
 | Tab | What it sets |
 | --- | --- |
-| **Content** | Source (fields or rendered cards), question / answer layout, cloze, Image Occlusion, order, title and numbers |
+| **Content** | Source (fields or rendered cards), question / answer layout, cloze, Image Occlusion, order, title and numbers, one PDF per subdeck |
 | **Appearance** | Theme, font and size, card width, layout density, card style, zebra / high-contrast / grid options |
 | **Page** | Paper size and orientation, margins, padding, spacing, line height, image height, page numbers, export info — next to a to-scale preview |
 | **Fields** | Which field goes where and how it looks, per note type (Fields source only) |

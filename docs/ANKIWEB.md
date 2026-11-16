@@ -10,7 +10,7 @@ Open source on GitHub (screenshots, full documentation, changelog):
 
 ## New in 1.4.5
 
-- **One PDF per subdeck** — choose *Every subdeck → separate PDFs* in the subdeck picker, click *Export PDF* and pick a folder: each direct subdeck gets its own file, with your filter and options applied.
+- **One PDF per subdeck** — pick a deck or subdeck, switch on *Content → Subdecks → Separate PDF for each*, click *Export PDF* and pick a folder: every subdeck below it gets its own file, with your filter and options applied.
 
 ## New in 1.4.4
 
