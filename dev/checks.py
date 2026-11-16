@@ -1059,6 +1059,96 @@ def check_legacy_grid(col, load_addon, pick):
     shutil.rmtree(stage, ignore_errors=True)
 
 
+def check_batch_subdecks(col, load_addon, pick):
+    print("Batch export: one PDF per subdeck")
+    app, mw, mod, stage = load_addon(col)
+    dlg = mod.PDFExportDialog(mw)
+    dlg._apply_settings(mod.DEFAULT_SETTINGS)
+
+    pick(dlg, "Lab")
+    ok(dlg.subdeck_combo.itemText(1) == mod._t("all_subdecks") and dlg.subdeck_combo.itemData(1) == "",
+       "a deck with subdecks offers the batch entry right after the entire deck")
+    ok(not dlg._batch_selected(), "the batch entry is not selected by default")
+    ok(dlg.subdeck_combo.findData("Lab::Long") > 1, "real subdecks follow the batch entry")
+    dlg.subdeck_combo.setCurrentIndex(1)
+    ok(dlg._batch_selected() and dlg._sel() == "Lab", "batch entry selected: _sel() is still the root deck")
+    dlg.subdeck_combo.setCurrentIndex(0)
+    ok(not dlg._batch_selected() and dlg._sel() == "Lab", "entire deck selected: not a batch")
+    pick(dlg, "Lab::Images")
+    ok(dlg._sel() == "Lab::Images" and not dlg._batch_selected(), "a real subdeck still selects normally")
+    pick(dlg, "Pharma")
+    dlg.subdeck_combo.setCurrentIndex(1)
+    ok(dlg._batch_selected(), "Pharma has subdecks too")
+    ok(dlg._batch_targets() == ["Pharma::Cardio"],
+       "targets are direct children only (Cardio::ACE is part of Cardio's file)")
+    pick(dlg, "Lab")
+    dlg.subdeck_combo.setCurrentIndex(1)
+    targets = dlg._batch_targets()
+    ok(sorted(targets) == ["Lab::Dual", "Lab::Images", "Lab::Long", "Lab::Math"],
+       "Lab: every direct subdeck with cards ({})".format(targets))
+    dlg.filter_edit.setText("zzzz-no-such-text")
+    ok(dlg._batch_targets() == [], "the filter applies: subdecks without matching cards are skipped")
+    dlg.filter_edit.setText("")
+    for i in range(dlg.deck_combo.count()):
+        dlg.deck_combo.setCurrentIndex(i)
+        has = any(d.name.startswith(dlg.deck_combo.currentText() + "::") for d in dlg._all_decks)
+        ok((dlg._batch_index >= 0) == has, "batch entry only for decks with subdecks ({})".format(
+            dlg.deck_combo.currentText()))
+
+    folder = tempfile.mkdtemp(prefix="pdffer-batch-")
+    try:
+        used = set()
+        open(os.path.join(folder, "Long.pdf"), "w").close()
+        paths = [dlg._batch_path(folder, "Lab::Long", used) for _ in range(3)] + \
+                [dlg._batch_path(folder, "Lab::Images", used)]
+        ok(paths == [os.path.join(folder, n) for n in ("Long 2.pdf", "Long 3.pdf", "Long 4.pdf", "Images.pdf")],
+           "file names: existing and repeated names get ' 2', ' 3' ... ({})".format(
+               [os.path.basename(p) for p in paths]))
+        ok(not any(os.path.exists(p) for p in paths), "no returned path exists on disk")
+
+        # a real batch into a temp folder
+        out = os.path.join(folder, "out")
+        os.mkdir(out)
+        pick(dlg, "Lab")
+        dlg.subdeck_combo.setCurrentIndex(1)
+        opened = []
+
+        class FakeDesktop:
+            @staticmethod
+            def openUrl(url):
+                opened.append(url.toLocalFile())
+                return True
+
+        saved = (mod.QDesktopServices, mod.QFileDialog.getExistingDirectory)
+        mod.QDesktopServices = FakeDesktop
+        mod.QFileDialog.getExistingDirectory = staticmethod(lambda *a, **k: out)
+        busy_seen = []
+        orig_set = dlg._set_btns
+        dlg._set_btns = lambda on: (busy_seen.append(on), orig_set(on))
+        try:
+            dlg._on_export()
+            end = time.time() + 240
+            while (dlg._batch is not None) and time.time() < end:
+                app.processEvents()
+                time.sleep(0.02)
+        finally:
+            mod.QDesktopServices, mod.QFileDialog.getExistingDirectory = saved
+            dlg._set_btns = orig_set
+        files = sorted(os.listdir(out))
+        ok(files == ["Dual.pdf", "Images.pdf", "Long.pdf", "Math.pdf"], "one PDF per target in the folder ({})".format(files))
+        ok(all(os.path.getsize(os.path.join(out, f)) > 1000 for f in files), "the PDFs are not empty")
+        ok(opened == [out], "the folder is opened once, the PDFs are not")
+        ok(dlg._batch is None and dlg._batch_deck is None and dlg._busy_depth == 0
+           and dlg.export_btn.isEnabled() and dlg.export_btn.text() == mod._t("btn_export"),
+           "after the batch the dialog is idle and batch state is cleared")
+        ok(busy_seen == [False, True], "buttons stay disabled for the whole batch ({})".format(busy_seen))
+        ok(dlg._sel() == "Lab", "_sel() is the root deck again")
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+    dlg.close()
+    shutil.rmtree(stage, ignore_errors=True)
+
+
 def run_checks(col, load_addon, pick):
     check_html(col, load_addon, pick)
     check_store(col, load_addon, pick)
@@ -1071,6 +1161,7 @@ def run_checks(col, load_addon, pick):
     check_windows(col, load_addon, pick)
     check_143(col, load_addon, pick)
     check_legacy_grid(col, load_addon, pick)
+    check_batch_subdecks(col, load_addon, pick)
     print("\n{} check(s) failed".format(len(FAILS)) if FAILS else "\nall checks passed")
     for f in FAILS:
         print("  - " + f)

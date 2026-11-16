@@ -9,7 +9,7 @@ AnkiPdffer turns flashcards into clean documents for printing, offline study, sh
   <img src="docs/screenshots/window-content-dark.png" width="49%" alt="The same window in dark mode">
 </p>
 
-**Install:** in Anki choose *Tools → Add-ons → Get Add-ons…* and enter **1987190048**, or download `AnkiPdffer-1.4.4.ankiaddon` from the [latest release](https://github.com/Janolm3/ankipdffer/releases/latest) and use *Install from file…*. Then open a deck and click **Export to PDF**, or use *Tools → AnkiPdffer*.
+**Install:** in Anki choose *Tools → Add-ons → Get Add-ons…* and enter **1987190048**, or download `AnkiPdffer-1.4.5.ankiaddon` from the [latest release](https://github.com/Janolm3/ankipdffer/releases/latest) and use *Install from file…*. Then open a deck and click **Export to PDF**, or use *Tools → AnkiPdffer*.
 
 ---
 
@@ -25,6 +25,7 @@ AnkiPdffer turns flashcards into clean documents for printing, offline study, sh
 - **Formulas**: MathJax `\(…\)` and `\[…\]` are drawn as sharp vector graphics, inline with the text or centred for display math.
 - **Cloze**: answers highlighted in the theme colour or a colour of your choice, hidden as `[...]` for worksheets, or one card per cloze as in Anki.
 - **Looks**: light, dark and *Pro* themes, five card styles, compact or standard density, any system font.
+- **One PDF per subdeck**: *Every subdeck → separate PDFs* in the subdeck picker writes a file for each direct subdeck into a folder you choose.
 - **Preview PDF** renders exactly what *Export PDF* will save; the small export info in the corner (version, engine, mode) can be turned off.
 
 ### See the Page While You Set It Up
@@ -67,23 +68,17 @@ Choose, per note type, which fields go to the front, back or extra section and h
 
 ---
 
-## What's New in 1.4.4
+## What's New in 1.4.5
 
-- **Page preview** with labelled dimensions that follows the option you are editing.
-- **Portrait or landscape** pages (*Page → Orientation*).
-- **Tighter Legacy HTML grid**: cards are packed into columns with no holes, in their original order.
-- **Exported files open in front** of Anki.
-- **Export info on/off**: hide the version / engine line in the bottom-right corner of PDF pages (*Page → Export info*).
-- **Option tabs aligned to the tab bar**: on *Content* and *Appearance* the controls run from the *Content* tab's centre line to the *Settings* tab's.
-- **Filter builder fixes**: pop-up lists no longer hide entries on macOS, and scrolling the rules no longer changes them.
+- **One PDF per subdeck**: pick *Every subdeck → separate PDFs* in the subdeck picker, click *Export PDF* and choose a folder; each direct subdeck gets its own file (nested subdecks included), with your filter and options applied.
 
-Earlier: 1.4.3 added the filter builder, MathJax formulas, one box per card type and cloze colours; 1.4.2 the deck-screen button and Windows engine setup; 1.4.0 worksheets, Image Occlusion pages and the redesigned window. Full list in the [CHANGELOG](CHANGELOG.md).
+Earlier: 1.4.4 added the page preview, portrait or landscape pages, a tighter Legacy HTML grid and the export info switch; 1.4.3 added the filter builder, MathJax formulas, one box per card type and cloze colours; 1.4.2 the deck-screen button and Windows engine setup; 1.4.0 worksheets, Image Occlusion pages and the redesigned window. Full list in the [CHANGELOG](CHANGELOG.md).
 
 ---
 
 ## The Window
 
-Pick the deck, subdeck and an optional filter at the top; the footer shows how many cards and notes will be exported. Options are grouped in five tabs:
+Pick the deck, subdeck and an optional filter at the top (*Every subdeck → separate PDFs* makes *Export PDF* write one file per direct subdeck into a folder; Preview and Legacy HTML still use the whole deck); the footer shows how many cards and notes will be exported. Options are grouped in five tabs:
 
 | Tab | What it sets |
 | --- | --- |
@@ -278,7 +273,7 @@ dev/dev.sh preview       # dialog screenshots + sample PDFs -> dev/out/index.htm
 dev/dev.sh sandbox       # throw-away Anki profile with a sample deck and this add-on
 dev/dev.sh sandbox-stop  # quit only the sandbox Anki
 dev/dev.sh sync          # copy the working tree into your Anki add-ons folder
-./release.sh 1.4.4 --build-only   # dist/AnkiPdffer-1.4.4.ankiaddon (+ .zip), nothing published
+./release.sh 1.4.5 --build-only   # dist/AnkiPdffer-1.4.5.ankiaddon (+ .zip), nothing published
 ```
 
 New interface languages go into `translations.py`; missing strings fall back to English. The AnkiWeb description lives in [`docs/ANKIWEB.md`](docs/ANKIWEB.md).

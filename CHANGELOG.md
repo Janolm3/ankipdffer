@@ -2,6 +2,11 @@
 
 All notable changes to the **AnkiPdffer Dev** add-on will be documented in this file.
 
+## [1.4.5] - 2026-11-16
+
+### Added
+- **One PDF per subdeck**: choosing *Every subdeck → separate PDFs* in the subdeck picker and clicking *Export PDF* asks for a folder and writes one PDF per direct subdeck, named after the subdeck (nested subdecks go into their parent's file). The current filter and all options apply; subdecks with no matching cards are skipped, and existing files are never overwritten (a number is added to the name instead). Progress shows as "2 of 7 · name" while it runs, and the folder opens when it is done. Cards sitting directly in the parent deck are not part of any file.
+
 ## [1.4.4] - 2026-11-01
 
 ### Added
