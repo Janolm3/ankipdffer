@@ -8,6 +8,10 @@ Open source on GitHub (screenshots, full documentation, changelog):
 
 [Buy Me a Coffee](https://buymeacoffee.com/janolm)
 
+## New in 1.4.5
+
+- **One PDF per subdeck** — choose *Every subdeck → separate PDFs* in the subdeck picker, click *Export PDF* and pick a folder: each direct subdeck gets its own file, with your filter and options applied.
+
 ## New in 1.4.4
 
 - **Page preview** — a to-scale sketch of the page next to the Page options, with labelled margins, padding, gaps and line height.

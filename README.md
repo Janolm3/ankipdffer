@@ -9,7 +9,7 @@ AnkiPdffer turns flashcards into clean documents for printing, offline study, sh
   <img src="docs/screenshots/window-content-dark.png" width="49%" alt="The same window in dark mode">
 </p>
 
-**Install:** in Anki choose *Tools → Add-ons → Get Add-ons…* and enter **1987190048**, or download `AnkiPdffer-1.4.4.ankiaddon` from the [latest release](https://github.com/Janolm3/ankipdffer/releases/latest) and use *Install from file…*. Then open a deck and click **Export to PDF**, or use *Tools → AnkiPdffer*.
+**Install:** in Anki choose *Tools → Add-ons → Get Add-ons…* and enter **1987190048**, or download `AnkiPdffer-1.4.5.ankiaddon` from the [latest release](https://github.com/Janolm3/ankipdffer/releases/latest) and use *Install from file…*. Then open a deck and click **Export to PDF**, or use *Tools → AnkiPdffer*.
 
 ---
 
@@ -273,7 +273,7 @@ dev/dev.sh preview       # dialog screenshots + sample PDFs -> dev/out/index.htm
 dev/dev.sh sandbox       # throw-away Anki profile with a sample deck and this add-on
 dev/dev.sh sandbox-stop  # quit only the sandbox Anki
 dev/dev.sh sync          # copy the working tree into your Anki add-ons folder
-./release.sh 1.4.4 --build-only   # dist/AnkiPdffer-1.4.4.ankiaddon (+ .zip), nothing published
+./release.sh 1.4.5 --build-only   # dist/AnkiPdffer-1.4.5.ankiaddon (+ .zip), nothing published
 ```
 
 New interface languages go into `translations.py`; missing strings fall back to English. The AnkiWeb description lives in [`docs/ANKIWEB.md`](docs/ANKIWEB.md).

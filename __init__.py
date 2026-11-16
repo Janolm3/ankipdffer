@@ -387,7 +387,7 @@ class ExportLogger:
 
 
 logger = ExportLogger()
-EXPORT_BUILD = "1.4.4-20261101"
+EXPORT_BUILD = "1.4.5-20261116"
 TOOL_NAME = "AnkiPdffer"
 # cloze answer colours: (string key, on light pages, on dark pages)
 CLOZE_COLORS = [
@@ -402,7 +402,7 @@ TOOL_URL = "https://ankiweb.net/shared/info/1987190048"
 TOOL_URL_DISPLAY = "ankiweb.net/shared/info/1987190048"
 
 
-def _addon_version(default="1.4.4"):
+def _addon_version(default="1.4.5"):
     try:
         manifest_path = os.path.join(os.path.dirname(__file__), "manifest.json")
         with open(manifest_path, "r", encoding="utf-8") as f:
