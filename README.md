@@ -70,7 +70,10 @@ Choose, per note type, which fields go to the front, back or extra section and h
 
 ## What's New in 1.4.5
 
-- **One PDF per subdeck**: pick a deck or subdeck, switch on *Content → Subdecks → Separate PDF for each*, click *Export PDF* and choose a folder; every subdeck below it gets its own file (*KOLOKWIUM - ZESTAW 1.pdf*, …), with your filter and options applied.
+- **One PDF per subdeck**: pick a deck or subdeck, switch on *Content → Subdecks → Separate PDF for each*, click *Export PDF* and choose a folder; every subdeck below it gets its own file (*KOLOKWIUM - ZESTAW 1.pdf*, …), with your filter and options applied. Several files are rendered at once, the loader shows *PDF 3 / 12* with a *Stop* button, and existing files can be replaced or kept.
+- **More in *Tools → AnkiPdffer***: export, preview and one-PDF-per-subdeck for the current deck, the last export log and Settings.
+- **Faster image viewer in Legacy HTML**: opens at once, smooth wheel and pinch zoom, drag, double tap, keyboard.
+- **The loader stays with Anki** instead of floating above other applications.
 
 Earlier: 1.4.4 added the page preview, portrait or landscape pages, a tighter Legacy HTML grid and the export info switch; 1.4.3 added the filter builder, MathJax formulas, one box per card type and cloze colours; 1.4.2 the deck-screen button and Windows engine setup; 1.4.0 worksheets, Image Occlusion pages and the redesigned window. Full list in the [CHANGELOG](CHANGELOG.md).
 

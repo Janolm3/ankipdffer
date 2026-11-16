@@ -10,7 +10,10 @@ Open source on GitHub (screenshots, full documentation, changelog):
 
 ## New in 1.4.5
 
-- **One PDF per subdeck** — pick a deck or subdeck, switch on *Content → Subdecks → Separate PDF for each*, click *Export PDF* and pick a folder: every subdeck below it gets its own file, with your filter and options applied.
+- **One PDF per subdeck** — pick a deck or subdeck, switch on *Content → Subdecks → Separate PDF for each*, click *Export PDF* and pick a folder: every subdeck below it gets its own file, with your filter and options applied. Several files are rendered at once, with a *PDF 3 / 12* loader, a *Stop* button and a choice to replace or keep existing files.
+- **More in *Tools → AnkiPdffer*** — export, preview and one PDF per subdeck for the current deck, the last export log, Settings.
+- **Faster image viewer in Legacy HTML** — opens at once, smooth wheel and pinch zoom, drag, double tap.
+- The loader no longer floats above other applications.
 
 ## New in 1.4.4
 

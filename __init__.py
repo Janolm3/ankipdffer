@@ -41,6 +41,11 @@ _STRINGS = {
         "menu_root": "AnkiPdffer",
         "menu_action": "Open export dialog...",
         "menu_quick_legacy": "Quick Legacy HTML (current deck)",
+        "menu_quick_pdf": "Export PDF (current deck)…",
+        "menu_quick_preview": "Preview PDF (current deck)",
+        "menu_subdeck_pdfs": "One PDF per subdeck (current deck)…",
+        "menu_logs": "Last export log",
+        "menu_settings": "Settings…",
         "deck_group": "Deck",
         "deck_lbl": "Deck:",
         "subdeck_lbl": "Subdeck:",
@@ -131,7 +136,11 @@ _STRINGS = {
         "msg_error": "Error.",
         "msg_pdf_saved": "PDF saved to:\n{}",
         "dlg_batch_folder": "Choose a folder for the PDFs",
-        "busy_batch": "{i} of {n} · {name} — ",
+        "btn_batch_stop": "Stop",
+        "msg_batch_exists": "{n} of these PDFs are already in this folder.",
+        "btn_batch_replace": "Replace",
+        "btn_batch_keep": "Keep both",
+        "busy_batch_stopping": "Finishing the PDFs already started…",
         "msg_batch_saved": "{n} PDFs saved to {folder}",
         "msg_batch_failed": " ({n} failed)",
         "msg_batch_none": "No subdeck has cards to export.",
@@ -154,6 +163,11 @@ _STRINGS = {
         "menu_root": "AnkiPdffer",
         "menu_action": "Otwórz okno eksportu...",
         "menu_quick_legacy": "Szybki Legacy HTML (bieżący deck)",
+        "menu_quick_pdf": "Eksportuj PDF (bieżący deck)…",
+        "menu_quick_preview": "Podgląd PDF (bieżący deck)",
+        "menu_subdeck_pdfs": "Osobny PDF dla każdego poddecku (bieżący deck)…",
+        "menu_logs": "Log ostatniego eksportu",
+        "menu_settings": "Ustawienia…",
         "deck_group": "Deck",
         "deck_lbl": "Deck:",
         "subdeck_lbl": "Subdeck:",
@@ -245,7 +259,11 @@ _STRINGS = {
         "msg_error": "Błąd.",
         "msg_pdf_saved": "PDF zapisano w:\n{}",
         "dlg_batch_folder": "Wybierz folder na pliki PDF",
-        "busy_batch": "{i} z {n} · {name} — ",
+        "btn_batch_stop": "Zatrzymaj",
+        "msg_batch_exists": "Pliki PDF, które już są w tym folderze: {n}.",
+        "btn_batch_replace": "Zastąp",
+        "btn_batch_keep": "Zachowaj oba",
+        "busy_batch_stopping": "Kończę już rozpoczęte PDF-y…",
         "msg_batch_saved": "Zapisano {n} PDF-ów w: {folder}",
         "msg_batch_failed": " (błędy: {n})",
         "msg_batch_none": "Żaden poddeck nie ma kart do wyeksportowania.",
@@ -317,6 +335,138 @@ class NoScrollDoubleSpinBox(QDoubleSpinBox):
     def focusInEvent(self, e):
         super().focusInEvent(e)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+
+# Legacy HTML image viewer. A click opens the picture at once, fitted to the window. Transforms
+# are written once per frame and are animated only for the fit / 100 % toggle, so wheel, pinch
+# and drag follow the hand without lag. Pointer events cover mouse, pen and touch (one finger
+# pans, two pinch); Safari's trackpad pinch arrives as gesture events, other browsers' as
+# ctrl+wheel. The fit follows window resizes and device rotation.
+_LIGHTBOX_JS = r"""<script>(function(){
+var lbx=document.getElementById('lbx'),li=document.getElementById('lbx-img'),
+cb=document.getElementById('lbx-close'),pc=document.querySelector('.page-content');
+if(!lbx||!li)return;
+var sc=1,ox=0,oy=0,fit=1,raf=0,animT=0,closeT=0,isOpen=false;
+var pts={},np=0,pan=null,pinch=null,moved=false,lastTap=0,tapX=0,tapY=0,g0=1;
+function vw(){return window.innerWidth;}
+function vh(){return window.innerHeight;}
+function nw(){return li.naturalWidth||li.width||1;}
+function nh(){return li.naturalHeight||li.height||1;}
+function paint(){raf=0;li.style.transform='translate3d('+ox+'px,'+oy+'px,0) scale('+sc+')';}
+function draw(){if(!raf)raf=requestAnimationFrame(paint);}
+function anim(on){clearTimeout(animT);if(on){li.classList.add('anim');
+animT=setTimeout(function(){li.classList.remove('anim');},200);}else li.classList.remove('anim');}
+function limits(){return [fit*0.5,Math.max(8,fit*8)];}
+function clampPan(){
+var lx=Math.max(0,(nw()*sc-vw())/2)+vw()*0.3,ly=Math.max(0,(nh()*sc-vh())/2)+vh()*0.3;
+ox=Math.max(-lx,Math.min(lx,ox));oy=Math.max(-ly,Math.min(ly,oy));}
+function zoomAt(cx,cy,ns){
+var l=limits();ns=Math.max(l[0],Math.min(l[1],ns));
+var k=ns/sc;ox-=(cx-vw()/2-ox)*(k-1);oy-=(cy-vh()/2-oy)*(k-1);sc=ns;clampPan();draw();}
+function measure(){var pad=vw()<700?0.98:0.92;
+fit=Math.min(1,vw()*pad/nw(),vh()*pad/nh());if(!(fit>0))fit=1;}
+function toFit(animated){anim(!!animated);sc=fit;ox=0;oy=0;draw();}
+function atFit(){return Math.abs(sc-fit)<=fit*0.02;}
+function toggle(cx,cy){anim(true);
+if(!atFit()){sc=fit;ox=0;oy=0;draw();}else zoomAt(cx,cy,fit<0.999?1:2.5);}
+function ready(){measure();anim(false);sc=fit;ox=0;oy=0;paint();li.style.visibility='';}
+function openImg(src,cx,cy){
+clearTimeout(closeT);isOpen=true;pts={};np=0;pan=null;pinch=null;
+lastTap=Date.now();tapX=cx;tapY=cy;
+li.style.visibility='hidden';li.onload=ready;
+if(li.getAttribute('src')!==src)li.src=src;
+if(li.complete&&li.naturalWidth)ready();
+lbx.classList.add('open');document.body.style.overflow='hidden';}
+function closeViewer(){
+if(!isOpen)return;isOpen=false;lbx.classList.remove('open');document.body.style.overflow='';
+closeT=setTimeout(function(){if(!isOpen){li.onload=null;li.removeAttribute('src');}},200);}
+if(pc)pc.addEventListener('click',function(e){
+var t=e.target;
+while(t&&t!==pc){if(t.tagName==='IMG'){openImg(t.currentSrc||t.src,e.clientX,e.clientY);return;}t=t.parentNode;}
+});
+cb.addEventListener('click',function(e){e.stopPropagation();closeViewer();});
+function dist(a,b){return Math.sqrt((a.x-b.x)*(a.x-b.x)+(a.y-b.y)*(a.y-b.y));}
+function two(){var k=Object.keys(pts);return [pts[k[0]],pts[k[1]]];}
+function startPan(){var k=Object.keys(pts)[0];pan={x:pts[k].x,y:pts[k].y,ox:ox,oy:oy};}
+lbx.addEventListener('pointerdown',function(e){
+if(e.target===cb||(e.pointerType==='mouse'&&e.button!==0))return;
+e.preventDefault();anim(false);
+if(np===0)moved=false;
+pts[e.pointerId]={x:e.clientX,y:e.clientY};np=Object.keys(pts).length;
+try{lbx.setPointerCapture(e.pointerId);}catch(err){}
+if(np===1){startPan();pan.onImg=(e.target===li);}
+else if(np===2){var p=two();pinch={d:dist(p[0],p[1])||1,x:(p[0].x+p[1].x)/2,y:(p[0].y+p[1].y)/2};moved=true;}
+});
+lbx.addEventListener('pointermove',function(e){
+var p=pts[e.pointerId];if(!p)return;
+p.x=e.clientX;p.y=e.clientY;
+if(np===1&&pan){
+var dx=p.x-pan.x,dy=p.y-pan.y;
+if(!moved&&dx*dx+dy*dy<(e.pointerType==='mouse'?16:100))return;
+if(!moved){moved=true;li.classList.add('dragging');}
+ox=pan.ox+dx;oy=pan.oy+dy;clampPan();draw();
+}else if(np>=2&&pinch){
+var q=two(),d=dist(q[0],q[1])||1,mx=(q[0].x+q[1].x)/2,my=(q[0].y+q[1].y)/2;
+ox+=mx-pinch.x;oy+=my-pinch.y;
+zoomAt(mx,my,sc*d/pinch.d);
+pinch.d=d;pinch.x=mx;pinch.y=my;
+}
+});
+function up(e){
+if(!pts[e.pointerId])return;
+var onImg=pan&&pan.onImg;
+delete pts[e.pointerId];np=Object.keys(pts).length;
+try{lbx.releasePointerCapture(e.pointerId);}catch(err){}
+if(np===1){pinch=null;startPan();pan.onImg=true;return;}
+if(np>1)return;
+pan=null;pinch=null;li.classList.remove('dragging');
+if(e.type==='pointercancel')return;
+if(moved){if(sc<fit)toFit(true);return;}
+var now=Date.now(),dx=e.clientX-tapX,dy=e.clientY-tapY;
+var again=now-lastTap<350&&dx*dx+dy*dy<(e.pointerType==='mouse'?100:1600);
+if(again&&onImg){lastTap=0;toggle(e.clientX,e.clientY);return;}
+if(!onImg&&!again){closeViewer();return;}
+lastTap=now;tapX=e.clientX;tapY=e.clientY;
+}
+lbx.addEventListener('pointerup',up);
+lbx.addEventListener('pointercancel',up);
+lbx.addEventListener('wheel',function(e){
+e.preventDefault();anim(false);
+var dy=e.deltaY*(e.deltaMode===1?16:e.deltaMode===2?vh():1);
+dy=Math.max(-240,Math.min(240,dy));
+zoomAt(e.clientX,e.clientY,sc*Math.exp(-dy*(e.ctrlKey?0.01:0.0022)));
+},{passive:false});
+lbx.addEventListener('gesturestart',function(e){e.preventDefault();anim(false);g0=sc;});
+lbx.addEventListener('gesturechange',function(e){e.preventDefault();
+if(np<2)zoomAt(e.clientX,e.clientY,g0*e.scale);});
+lbx.addEventListener('gestureend',function(e){e.preventDefault();if(sc<fit)toFit(true);});
+lbx.addEventListener('dblclick',function(e){e.preventDefault();});
+lbx.addEventListener('contextmenu',function(e){if(np)e.preventDefault();});
+document.addEventListener('keydown',function(e){
+if(!isOpen||e.metaKey||e.ctrlKey||e.altKey)return;
+var k=e.key,cx=vw()/2,cy=vh()/2,step=80;
+if(k==='Escape')closeViewer();
+else if(k==='+'||k==='=') {anim(true);zoomAt(cx,cy,sc*1.4);}
+else if(k==='-'||k==='_'){anim(true);zoomAt(cx,cy,sc/1.4);}
+else if(k==='0'){toFit(true);}
+else if(k==='1'){anim(true);zoomAt(cx,cy,1);}
+else if(k==='ArrowLeft'){anim(true);ox+=step;clampPan();draw();}
+else if(k==='ArrowRight'){anim(true);ox-=step;clampPan();draw();}
+else if(k==='ArrowUp'){anim(true);oy+=step;clampPan();draw();}
+else if(k==='ArrowDown'){anim(true);oy-=step;clampPan();draw();}
+else return;
+e.preventDefault();
+});
+function refit(){
+if(!isOpen||!li.naturalWidth)return;
+var was=atFit();measure();
+if(was||sc<fit){anim(false);sc=fit;ox=0;oy=0;}else clampPan();
+draw();}
+window.addEventListener('resize',refit);
+window.addEventListener('orientationchange',refit);
+window.__pdfferViewer={open:openImg,close:closeViewer,state:function(){
+return {open:isOpen,scale:sc,fit:fit,x:ox,y:oy};}};
+})();</script>"""
 
 
 # Legacy HTML grid: runs of consecutive cards are packed into columns (at least 340 px wide),
@@ -2233,13 +2383,12 @@ class PDFExportDialog(QDialog):
         overlay_ly.setContentsMargins(0, 0, 0, 0)
         overlay_ly.addStretch()
 
-        # The progress panel is its own small floating window: it stays in front of the export
-        # window (and of Anki) for the whole job, even if the user clicks elsewhere meanwhile.
-        self.busy_hud = QWidget(self, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
-                                | Qt.WindowType.WindowStaysOnTopHint)
+        # The progress panel is its own small window that belongs to the export window: it stays
+        # in front of it (and of Anki) for the whole job and moves with it, but it is not above
+        # other applications - switching away from Anki leaves it behind with Anki's windows.
+        self.busy_hud = QWidget(self, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
         self.busy_hud.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.busy_hud.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        self.busy_hud.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow, True)
         hud_ly = QVBoxLayout(self.busy_hud)
         hud_ly.setContentsMargins(0, 0, 0, 0)
         self.busy_panel = macui.RoundedFrame("hud", None, 14, self.busy_hud)
@@ -2261,10 +2410,18 @@ class PDFExportDialog(QDialog):
         self.busy_overlay_bar.setTextVisible(False)
         panel_ly.addWidget(self.busy_overlay_bar, 0, Qt.AlignmentFlag.AlignCenter)
 
-        hint = QLabel(_t("busy_hint"))
+        hint = self.busy_overlay_hint = QLabel(_t("busy_hint"))
         hint.setObjectName("BusyOverlayHint")
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         panel_ly.addWidget(hint)
+
+        # only for a one-PDF-per-subdeck export: stop after the files already being rendered
+        self.busy_stop_btn = QPushButton(_t("btn_batch_stop"))
+        self.busy_stop_btn.setAutoDefault(False)
+        self.busy_stop_btn.setCursor(Qt.CursorShape.ArrowCursor)
+        self.busy_stop_btn.clicked.connect(self._batch_stop)
+        self.busy_stop_btn.setVisible(False)
+        panel_ly.addWidget(self.busy_stop_btn, 0, Qt.AlignmentFlag.AlignCenter)
 
         hud_ly.addWidget(self.busy_panel)
         overlay_ly.addStretch()
@@ -3187,7 +3344,13 @@ class PDFExportDialog(QDialog):
         self.grid_cb.setEnabled(on)
 
     def _animate_busy(self):
-        self._busy_val = min(95.0, self._busy_val + (95.0 - self._busy_val) * 0.025)
+        if self._batch is not None:
+            # real progress: finished files, plus a share for the ones being rendered
+            b = self._batch
+            target = 100.0 * (b["saved"] + b["failed"] + 0.5 * len(b["active"])) / max(1, len(b["targets"]))
+            self._busy_val = max(self._busy_val, self._busy_val + (min(99.0, target) - self._busy_val) * 0.12)
+        else:
+            self._busy_val = min(95.0, self._busy_val + (95.0 - self._busy_val) * 0.025)
         if hasattr(self, "busy_overlay_bar"):
             self.busy_overlay_bar.setValue(int(self._busy_val))
         if hasattr(self, "busy_bar"):
@@ -3196,15 +3359,20 @@ class PDFExportDialog(QDialog):
                 and not self.busy_hud.isVisible():
             self.busy_hud.show()
             self._position_busy_overlay()
-        if hasattr(self, "busy_hud") and self._busy_depth:
-            self.busy_hud.raise_()
+        if hasattr(self, "busy_hud") and self._busy_depth and self._app_active():
+            self.busy_hud.raise_()  # in front of Anki's windows; never while another app is in use
         if hasattr(self, "busy_overlay_label"):
             self.busy_overlay_label.setText(self._base_busy_message or "")
 
+    @staticmethod
+    def _app_active():
+        return QApplication.applicationState() == Qt.ApplicationState.ApplicationActive
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        self._position_busy_overlay()
+
     def _set_busy_message(self, message):
-        if self._batch is not None:
-            b = self._batch
-            message = _t("busy_batch").format(i=b["i"], n=len(b["targets"]), name=b["name"]) + message
         self._base_busy_message = message
         self.busy_label.setText(message)
         self.busy_wrap.setVisible(True)
@@ -3213,7 +3381,8 @@ class PDFExportDialog(QDialog):
             self.busy_overlay.setVisible(True)
             self.busy_overlay.raise_()
             self.busy_hud.show()
-            self.busy_hud.raise_()
+            if self._app_active():
+                self.busy_hud.raise_()
             self._position_busy_overlay()
         QApplication.processEvents()
 
@@ -3243,6 +3412,8 @@ class PDFExportDialog(QDialog):
             self.busy_overlay.setVisible(False)
             self.busy_hud.setVisible(False)
             self.busy_overlay_bar.setValue(0)
+            self.busy_overlay_hint.setText(_t("busy_hint"))
+            self.busy_stop_btn.setVisible(False)
         self.busy_label.setText("")
         self._set_btns(True)
         try:
@@ -3366,10 +3537,7 @@ class PDFExportDialog(QDialog):
         logger.start("Export")
         self._font_debug_logged_modes = set()
         self._preview_pending = False
-        if self._batch is not None and self._busy_depth:
-            self._set_busy_message(_t("busy_pdf_html"))  # stay busy between decks
-        else:
-            self._begin_busy(_t("busy_pdf_html"))
+        self._begin_busy(_t("busy_pdf_html"))
         self.export_btn.setText(_t("generating"))
         try:
             QApplication.processEvents()
@@ -3411,18 +3579,44 @@ class PDFExportDialog(QDialog):
         """A deck's name as seen from the selected deck: "KOLOKWIUM - ZESTAW 1"."""
         return " - ".join(deck[len(root) + 2:].split("::")) if deck != root else root.split("::")[-1]
 
-    def _batch_path(self, folder, name, used):
-        """A new .pdf path in `folder` for `name`: never an existing file nor one used in this batch."""
+    def _batch_path(self, folder, name, used, overwrite=False):
+        """A .pdf path in `folder` for `name`, never one already used in this batch. An existing
+        file is replaced when `overwrite` is set, otherwise the name gets a number."""
         base = self._safe_filename(name)
         path = os.path.join(folder, base + ".pdf")
         n = 2
-        while os.path.exists(path) or path in used:
+        while path in used or (os.path.exists(path) and not overwrite):
             path = os.path.join(folder, "{} {}.pdf".format(base, n))
             n += 1
         used.add(path)
         return path
 
+    def _batch_ask_overwrite(self, folder, targets):
+        """Files of this export already in `folder`: True = replace them, False = keep both
+        (numbered names), None = cancelled. Nothing there: False without asking."""
+        root = self._sel()
+        names = {self._safe_filename(self._batch_name(root, deck)) + ".pdf" for deck in targets}
+        existing = sorted(n for n in names if os.path.exists(os.path.join(folder, n)))
+        if not existing:
+            return False
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(_t("dlg_batch_folder"))
+        box.setText(_t("msg_batch_exists").format(n=len(existing)))
+        box.setInformativeText(", ".join(existing[:4]) + (" …" if len(existing) > 4 else ""))
+        replace = box.addButton(_t("btn_batch_replace"), QMessageBox.ButtonRole.DestructiveRole)
+        keep = box.addButton(_t("btn_batch_keep"), QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(keep)
+        box.exec()
+        clicked = box.clickedButton()
+        return True if clicked is replace else False if clicked is keep else None
+
     def _on_batch_export(self):
+        """One PDF per deck of _batch_targets(). The HTML of each deck is built here (the
+        collection lives on this thread), the PDFs are rendered by several WeasyPrint
+        processes at once; files WeasyPrint could not make go through the built-in renderer
+        one by one at the end."""
         targets = self._batch_targets()
         if not targets:
             showWarning(_t("msg_batch_none"))
@@ -3430,29 +3624,167 @@ class PDFExportDialog(QDialog):
         folder = QFileDialog.getExistingDirectory(self, _t("dlg_batch_folder"), self._export_dir())
         if not folder:
             return
+        overwrite = self._batch_ask_overwrite(folder, targets)
+        if overwrite is None:
+            return
         _store.update_settings({"export_dir": folder})
         _store.save()
-        self._batch = {"targets": targets, "root": self._sel(), "folder": folder, "i": 0, "name": "", "used": set(),
-                       "saved": 0, "failed": 0, "path": None}
-        self._batch_next()
+        self._batch = {
+            "targets": targets, "root": self._sel(), "folder": folder, "used": set(), "overwrite": overwrite,
+            "next": 0, "active": [], "fallback": [], "saved": 0, "failed": 0, "stop": False,
+            "workers": max(1, min(4, (os.cpu_count() or 2) // 2)),
+            "font_debug": None,
+        }
+        logger.start("Export: one PDF per subdeck")
+        self._font_debug_logged_modes = set()
+        self._preview_pending = False
+        self._begin_busy(_t("busy_pdf_html"))
+        self.export_btn.setText(_t("generating"))
+        self._active_export_theme_index = self.theme_radio.currentIndex()
+        logger.log("Build: {}".format(EXPORT_BUILD))
+        logger.log("Theme: {} ({})".format(self._theme_name(), self._theme_index()))
+        logger.log("Decks: {}, parallel renders: {}".format(len(targets), self._batch["workers"]))
+        self.busy_stop_btn.setEnabled(True)
+        self.busy_stop_btn.setVisible(True)
+        self._batch_status()
+        QTimer.singleShot(0, self._batch_pump)
 
-    def _batch_next(self):
+    def _batch_stop(self):
         b = self._batch
-        deck = b["targets"][b["i"]]
-        b["i"] += 1
-        b["name"] = self._batch_name(b["root"], deck)
-        b["path"] = self._batch_path(b["folder"], b["name"], b["used"])
+        if b is not None and not b["stop"]:
+            b["stop"] = True
+            self.busy_stop_btn.setEnabled(False)
+            logger.log("Stopped by the user")
+            self._batch_status()
+
+    def _batch_status(self):
+        """HUD and footer text of a batch: how many files are done and which are in the works."""
+        b = self._batch
+        done, total = b["saved"] + b["failed"], len(b["targets"])
+        self._set_busy_message("PDF {} / {}".format(done, total))
+        names = [job["name"] for job in b["active"]]
+        if b["stop"]:
+            hint = _t("busy_batch_stopping")
+        elif names:
+            hint = ", ".join(names[:2]) + (" +{}".format(len(names) - 2) if len(names) > 2 else "")
+        else:
+            hint = _t("busy_hint")
+        fm = self.busy_overlay_hint.fontMetrics()
+        self.busy_overlay_hint.setText(fm.elidedText(hint, Qt.TextElideMode.ElideMiddle, 300))
+        self._position_busy_overlay()
+
+    def _batch_start_job(self):
+        """Build the next deck's HTML and hand it to a render thread."""
+        b = self._batch
+        deck = b["targets"][b["next"]]
+        b["next"] += 1
+        name = self._batch_name(b["root"], deck)
+        job = {"deck": deck, "name": name, "path": self._batch_path(b["folder"], name, b["used"], b["overwrite"]),
+               "html": None, "logs": [], "result": None}
         self._batch_deck = deck
-        self._export_pdf_to(b["path"])
+        try:
+            html, card_ids = self._build_html(mode="pdf")
+            fd, job["html"] = tempfile.mkstemp(suffix=".html", text=True)
+            os.close(fd)
+            with open(job["html"], "w", encoding="utf-8") as f:
+                f.write(html)
+            self._save_debug_artifacts("pdf", card_ids, html)
+            layout = dict(getattr(self, "_last_layout", None) or {})
+        except Exception as e:
+            logger.error("{}: HTML".format(name), e)
+            self._batch_remove_html(job)
+            if self._batch is b:
+                b["failed"] += 1
+            return
+        finally:
+            self._batch_deck = None
+        if self._batch is not b:  # aborted while the HTML was being built
+            self._batch_remove_html(job)
+            return
+        if b["font_debug"] is None:
+            b["font_debug"] = self._font_debug_snapshot()
+        b["active"].append(job)
+        threading.Thread(target=self._batch_render, args=(job, b["font_debug"], layout), daemon=True).start()
+
+    def _batch_render(self, job, font_debug, layout):
+        """Render thread: WeasyPrint for one deck. Only touches its own job."""
+        ok = False
+        try:
+            ok = self._export_pdf_via_weasyprint(job["path"], job["html"], job["logs"], font_debug, layout)
+        except Exception as e:
+            job["logs"].append("External export exception: {}".format(e))
+        job["result"] = bool(ok and os.path.exists(job["path"]))
+
+    @staticmethod
+    def _batch_remove_html(job):
+        if job.get("html"):
+            try:
+                os.remove(job["html"])
+            except OSError:
+                pass
+            job["html"] = None
+
+    def _batch_pump(self):
+        """Main-thread loop of a batch: collect finished renders, start new ones, finish."""
+        b = self._batch
+        if b is None:
+            return
+        for job in [j for j in b["active"] if j["result"] is not None]:
+            b["active"].remove(job)
+            self._batch_remove_html(job)
+            for entry in job["logs"]:
+                logger.log("{}: {}".format(job["name"], entry))
+            if job["result"]:
+                b["saved"] += 1
+                logger.log("{}: PDF {} ({} B)".format(job["name"], job["path"], os.path.getsize(job["path"])))
+            elif b["stop"]:
+                b["failed"] += 1
+            else:
+                b["fallback"].append(job)
+        more = b["next"] < len(b["targets"]) and not b["stop"]
+        if more and len(b["active"]) < b["workers"]:
+            self._batch_start_job()  # one per turn: the window keeps repainting in between
+            if self._batch is not b:
+                return
+            more = b["next"] < len(b["targets"]) and not b["stop"]
+        self._batch_status()
+        if more or b["active"]:
+            QTimer.singleShot(0 if more and len(b["active"]) < b["workers"] else 100, self._batch_pump)
+        elif b["fallback"] and not b["stop"]:
+            self._batch_fallback_next()
+        else:
+            b["failed"] += len(b["fallback"])
+            self._batch_finish()
+
+    def _batch_fallback_next(self):
+        """The built-in renderer has one page: the decks WeasyPrint left go through it in turn."""
+        b = self._batch
+        job = b["fallback"].pop(0)
+        b["active"].append(job)
+        self._batch_deck = job["deck"]
+        self._batch_status()
+        try:
+            self._start_qt_pdf_export(job["path"])
+        except Exception as e:
+            logger.error("{}: fallback".format(job["name"]), e)
+            self._batch_printed(False)
 
     def _batch_printed(self, success):
-        """One deck of the batch finished: count it and go on, or end the batch."""
+        """The built-in renderer finished one deck of the batch (called from _printed)."""
         b = self._batch
+        self._batch_deck = None
+        if b["active"]:
+            b["active"].pop()
         b["saved" if success else "failed"] += 1
-        if b["i"] < len(b["targets"]):
-            self._batch_next()
-            return
+        QTimer.singleShot(0, self._batch_pump)
+
+    def _batch_finish(self):
+        b = self._batch
         saved, failed, folder = b["saved"], b["failed"], b["folder"]
+        skipped = len(b["targets"]) - b["next"]
+        logger.log("Saved: {}, failed: {}, not started: {}".format(saved, failed, skipped))
+        logger.finish()
+        self._save_debug_log()
         self._reset()  # also clears the batch state
         if saved:
             QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
@@ -3583,7 +3915,7 @@ class PDFExportDialog(QDialog):
             logs.append("External export exception: {}".format(e))
         self._external_export_result = {"success": False, "logs": logs}
 
-    def _export_pdf_via_weasyprint(self, path, html_path, logs, font_debug):
+    def _export_pdf_via_weasyprint(self, path, html_path, logs, font_debug, layout=None):
         vendor_dir = self._engine_vendor_dir()
         if vendor_dir and not os.path.isdir(vendor_dir):
             logs.append("PDF engine: WeasyPrint unavailable (.vendor missing)")
@@ -3697,7 +4029,8 @@ class PDFExportDialog(QDialog):
                 command + [
                     "-I", "-B", "-c", script, vendor_dir, html_path, path,
                     json.dumps(font_debug, sort_keys=True),
-                    json.dumps(getattr(self, "_last_layout", None) or {}),
+                    # parallel jobs pass their own: _last_layout belongs to the latest _build_html
+                    json.dumps((layout if layout is not None else getattr(self, "_last_layout", None)) or {}),
                 ],
                 capture_output=True,
                 text=True,
@@ -3802,10 +4135,10 @@ class PDFExportDialog(QDialog):
         if success and os.path.exists(path):
             logger.log("PDF path: {}".format(path))
             logger.log("PDF: {} B".format(os.path.getsize(path)))
-        logger.finish()
-        self._save_debug_log()
         batch = self._batch is not None
         if not batch:
+            logger.finish()
+            self._save_debug_log()
             self._reset()
         for attr in ("temp_html_path", "temp_fallback_path"):
             tmp = getattr(self, attr, None)
@@ -4428,17 +4761,17 @@ class PDFExportDialog(QDialog):
                 "#lbx{{display:flex;position:fixed;inset:0;z-index:9999;"
                 "background:rgba(0,0,0,.93);align-items:center;"
                 "justify-content:center;overflow:hidden;"
-                "opacity:0;pointer-events:none;"
-                "transition:opacity .18s ease}}"
+                "opacity:0;pointer-events:none;touch-action:none;"
+                "overscroll-behavior:contain;-webkit-user-select:none;user-select:none;"
+                "transition:opacity .12s ease}}"
                 "#lbx.open{{opacity:1;pointer-events:auto}}"
-                "#lbx-img{{width:auto;height:auto;"
+                "#lbx-img{{flex:none;width:auto;height:auto;"
                 "max-width:none!important;max-height:none!important;"
                 "cursor:grab;user-select:none;-webkit-user-drag:none;"
-                "touch-action:none;"
-                "will-change:transform;border-radius:3px;"
-                "transition:transform .1s cubic-bezier(.25,.46,.45,.94)}}"
-                "#lbx-img.dragging{{cursor:grabbing;transition:none}}"
-                "#lbx-img.no-anim{{transition:none}}"
+                "touch-action:none;transform-origin:50% 50%;"
+                "will-change:transform;border-radius:3px}}"
+                "#lbx-img.anim{{transition:transform .16s cubic-bezier(.25,.46,.45,.94)}}"
+                "#lbx-img.dragging{{cursor:grabbing}}"
                 "#lbx-close{{position:fixed;top:14px;right:18px;"
                 "width:34px;height:34px;"
                 "background:rgba(255,255,255,.12);"
@@ -5102,134 +5435,7 @@ class PDFExportDialog(QDialog):
                 '<img id="lbx-img" src="" alt="">'
                 '</div>'
             )
-            html.append(
-                "<script>(function(){"
-                "var lbx=document.getElementById('lbx'),"
-                "li=document.getElementById('lbx-img'),"
-                "cb=document.getElementById('lbx-close'),"
-                "pc=document.querySelector('.page-content');"
-                "var sc=1,ox=0,oy=0,drag=false,sx=0,sy=0,fitScale=1;"
-                "var lastClick=0,lastClickX=0,lastClickY=0,ignoreNativeDbl=false,suppressClickUntil=0,openTimer=0;"
-                "function applyT(){"
-                "li.style.transform='translate('+ox+'px,'+oy+'px) scale('+sc+')';"
-                "}"
-                "function fitToView(){"
-                "var vw=window.innerWidth*0.9,vh=window.innerHeight*0.9;"
-                "var nw=li.naturalWidth||li.width||vw;"
-                "var nh=li.naturalHeight||li.height||vh;"
-                "fitScale=Math.min(1,Math.min(vw/nw,vh/nh));"
-                "sc=fitScale;ox=0;oy=0;"
-                "li.classList.remove('no-anim');"
-                "applyT();"
-                "}"
-                "function toggleZoomAt(cx,cy){"
-                "if(Math.abs(sc-fitScale)<0.01){"
-                "var rect=lbx.getBoundingClientRect();"
-                "var mx=cx-rect.width/2-ox;"
-                "var my=cy-rect.height/2-oy;"
-                "var ds=1/sc;"
-                "ox-=mx*(ds-1);oy-=my*(ds-1);sc=1;"
-                "}else{sc=fitScale;ox=0;oy=0;}"
-                "li.classList.remove('no-anim');applyT();"
-                "}"
-                "function isQuickRepeat(cx,cy){"
-                "var now=Date.now();"
-                "var dx=cx-lastClickX,dy=cy-lastClickY;"
-                "var hit=lastClick&&now-lastClick<330&&(dx*dx+dy*dy)<64;"
-                "lastClick=now;lastClickX=cx;lastClickY=cy;"
-                "return hit;"
-                "}"
-                "function openImg(src,full,cx,cy){"
-                "if(openTimer){clearTimeout(openTimer);openTimer=0;}"
-                "sc=1;ox=0;oy=0;"
-                "lastClick=0;ignoreNativeDbl=false;suppressClickUntil=0;"
-                "li.classList.add('no-anim');"
-                "li.style.transform='';"
-                "li.onload=function(){fitToView();if(full)toggleZoomAt(cx||window.innerWidth/2,cy||window.innerHeight/2);};"
-                "li.src=src;"
-                "lbx.classList.add('open');"
-                "document.body.style.overflow='hidden';"
-                "if(li.complete&&li.naturalWidth){fitToView();if(full)toggleZoomAt(cx||window.innerWidth/2,cy||window.innerHeight/2);}"
-                "}"
-                "function closeViewer(){"
-                "if(openTimer){clearTimeout(openTimer);openTimer=0;}"
-                "lbx.classList.remove('open');"
-                "li.src='';"
-                "document.body.style.overflow='';"
-                "}"
-                "if(pc)pc.addEventListener('click',function(e){"
-                "var t=e.target;"
-                "while(t&&t!==pc){"
-                "if(t.tagName==='IMG'){"
-                "var src=t.src,cx=e.clientX,cy=e.clientY;"
-                "if(openTimer)clearTimeout(openTimer);"
-                "openTimer=setTimeout(function(){openImg(src,false,cx,cy);},180);return;}"
-                "t=t.parentNode;}"
-                "});"
-                "if(pc)pc.addEventListener('dblclick',function(e){"
-                "var t=e.target;"
-                "while(t&&t!==pc){"
-                "if(t.tagName==='IMG'){e.preventDefault();e.stopPropagation();"
-                "if(openTimer){clearTimeout(openTimer);openTimer=0;}"
-                "openImg(t.src,true,e.clientX,e.clientY);return;}"
-                "t=t.parentNode;}"
-                "});"
-                "cb.addEventListener('click',closeViewer);"
-                "lbx.addEventListener('click',function(e){"
-                "if(e.target===lbx)closeViewer();"
-                "});"
-                "document.addEventListener('keydown',function(e){"
-                "if(e.key==='Escape'&&lbx.classList.contains('open'))closeViewer();"
-                "});"
-                "li.addEventListener('wheel',function(e){"
-                "e.preventDefault();"
-                "var rect=lbx.getBoundingClientRect();"
-                "var mx=e.clientX-rect.width/2-ox;"
-                "var my=e.clientY-rect.height/2-oy;"
-                "var factor=Math.pow(1.001,-e.deltaY);"
-                "var ns=Math.max(0.05,Math.min(20,sc*factor));"
-                "var ds=ns/sc;"
-                "ox-=mx*(ds-1);oy-=my*(ds-1);"
-                "sc=ns;applyT();"
-                "},{passive:false});"
-                "li.addEventListener('mousedown',function(e){"
-                "if(e.button!==0)return;"
-                "drag=true;sx=e.clientX-ox;sy=e.clientY-oy;"
-                "li.classList.add('dragging');"
-                "e.preventDefault();"
-                "});"
-                "document.addEventListener('mousemove',function(e){"
-                "if(!drag)return;"
-                "ox=e.clientX-sx;oy=e.clientY-sy;applyT();"
-                "});"
-                "document.addEventListener('mouseup',function(){"
-                "if(drag){drag=false;li.classList.remove('dragging');}"
-                "});"
-                "li.addEventListener('click',function(e){"
-                "e.stopPropagation();"
-                "if(Date.now()<suppressClickUntil)return;"
-                "if(isQuickRepeat(e.clientX,e.clientY)){"
-                "ignoreNativeDbl=true;lastClick=0;"
-                "toggleZoomAt(e.clientX,e.clientY);"
-                "}"
-                "});"
-                "li.addEventListener('dblclick',function(e){"
-                "e.preventDefault();"
-                "e.stopPropagation();"
-                "if(ignoreNativeDbl){ignoreNativeDbl=false;return;}"
-                "lastClick=0;toggleZoomAt(e.clientX,e.clientY);"
-                "});"
-                "li.addEventListener('touchend',function(e){"
-                "if(e.changedTouches.length!==1)return;"
-                "var t=e.changedTouches[0];"
-                "suppressClickUntil=Date.now()+450;"
-                "if(isQuickRepeat(t.clientX,t.clientY)){"
-                "e.preventDefault();lastClick=0;"
-                "toggleZoomAt(t.clientX,t.clientY);"
-                "}"
-                "});"
-                "})();</script>"
-            )
+            html.append(_LIGHTBOX_JS)
             if grid_mode:
                 html.append(_MASONRY_JS.replace("__GAP__", str(int(card_gap))))
 
@@ -5673,24 +5879,91 @@ def _rebuild_dialog():
         dlg.activateWindow()
 
 
+def _open_on_current_deck():
+    """The export window, shown, on the deck Anki is on (None without a collection)."""
+    if mw is None or mw.col is None:
+        showWarning(_t("msg_no_collection"))
+        return None
+    cur = mw.col.decks.current()
+    show_export_dialog(cur["name"] if cur else None)
+    return _dlg
+
+
+def _quick_pdf_export():
+    dlg = _open_on_current_deck()
+    if dlg is not None and dlg.export_btn.isEnabled():
+        QTimer.singleShot(0, dlg._on_export)
+
+
+def _quick_pdf_preview():
+    dlg = _open_on_current_deck()
+    if dlg is not None and dlg.preview_btn.isEnabled():
+        QTimer.singleShot(0, dlg._on_preview)
+
+
+def _quick_subdeck_pdfs():
+    """One PDF per subdeck of the current deck, whatever the Content switch says."""
+    dlg = _open_on_current_deck()
+    if dlg is None or not dlg.export_btn.isEnabled():
+        return
+    if not dlg._has_subdecks():
+        showWarning(_t("msg_batch_none"))
+        return
+    QTimer.singleShot(0, lambda: dlg._precheck() and dlg._on_batch_export())
+
+
+def _show_last_log():
+    dlg = _open_on_current_deck()
+    if dlg is not None:
+        dlg._show_logs()
+
+
+def _show_settings():
+    dlg = _open_on_current_deck()
+    if dlg is not None:
+        dlg._go_to_tab(dlg.stack.count() - 1)
+
+
 _dev_menu = QMenu(_t("menu_root"), mw)
 mw.form.menuTools.addMenu(_dev_menu)
 
 action = QAction(_t("menu_action"), mw)
 action.triggered.connect(show_export_dialog)
 _dev_menu.addAction(action)
+_dev_menu.addSeparator()
 
 _quick_legacy_action = QAction(_t("menu_quick_legacy"), mw)
 _quick_legacy_action.setShortcut(QKeySequence("Shift+Alt+P"))
 _quick_legacy_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
 _quick_legacy_action.triggered.connect(_quick_legacy_export)
-_dev_menu.addAction(_quick_legacy_action)
+
+# (string key, slot): the menu below "Open export dialog…"
+_MENU_ITEMS = (
+    ("menu_quick_pdf", _quick_pdf_export),
+    ("menu_quick_preview", _quick_pdf_preview),
+    ("menu_subdeck_pdfs", _quick_subdeck_pdfs),
+    None,  # Quick Legacy HTML keeps its own action (shortcut)
+    ("menu_logs", _show_last_log),
+    ("menu_settings", _show_settings),
+)
+_menu_actions = []
+for _item in _MENU_ITEMS:
+    if _item is None:
+        _dev_menu.addAction(_quick_legacy_action)
+        _dev_menu.addSeparator()
+        continue
+    _act = QAction(_t(_item[0]), mw)
+    _act.triggered.connect(lambda _checked=False, slot=_item[1]: slot())
+    _dev_menu.addAction(_act)
+    _menu_actions.append((_item[0], _act))
 
 
 def _retranslate_menu():
     _dev_menu.setTitle(_t("menu_root"))
     action.setText(_t("menu_action"))
     _quick_legacy_action.setText(_t("menu_quick_legacy"))
+    for key, act in _menu_actions:
+        act.setText(_t(key))
 
 
 # ---------------------------------------------------------------- deck screen button

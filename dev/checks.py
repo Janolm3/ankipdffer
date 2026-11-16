@@ -435,7 +435,10 @@ def check_141(col, load_addon, pick):
     dlg.show()
     dlg._begin_busy("x")
     ok(dlg.busy_hud.isVisible() and dlg.busy_hud.isWindow(), "loader is a floating window while busy")
-    ok(bool(dlg.busy_hud.windowFlags() & mod.Qt.WindowType.WindowStaysOnTopHint), "loader stays on top")
+    ok(not (dlg.busy_hud.windowFlags() & mod.Qt.WindowType.WindowStaysOnTopHint)
+       and dlg.busy_hud.parentWidget() is dlg
+       and not dlg.busy_hud.testAttribute(mod.Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow),
+       "loader belongs to the export window and is not above other applications")
     v0 = dlg._busy_val
     for _ in range(50):
         dlg._animate_busy()
@@ -1065,6 +1068,15 @@ def check_batch_subdecks(col, load_addon, pick):
     dlg = mod.PDFExportDialog(mw)
     dlg._apply_settings(mod.DEFAULT_SETTINGS)
 
+    labels = [x.text() for x in mod._dev_menu.actions() if not x.isSeparator()]
+    ok(labels == [mod._t(k) for k in ("menu_action", "menu_quick_pdf", "menu_quick_preview", "menu_subdeck_pdfs",
+                                      "menu_quick_legacy", "menu_logs", "menu_settings")],
+       "Tools menu: export, preview, one PDF per subdeck, Legacy HTML, log, settings ({})".format(len(labels)))
+    pick(dlg, "Lab::Images")
+    legacy, _ = dlg._build_html(mode="legacy")
+    ok("__pdfferViewer" in legacy and "pointerdown" in legacy and "gesturechange" in legacy
+       and "setTimeout(function(){openImg" not in legacy,
+       "Legacy HTML: the image viewer opens at once and handles pointer, wheel and pinch")
     cb = dlg.subdeck_pdfs_cb
     pick(dlg, "Lab")
     ok(dlg.subdeck_combo.findData("Lab::Long") == 1 + sorted(
@@ -1109,6 +1121,10 @@ def check_batch_subdecks(col, load_addon, pick):
            "file names: existing and repeated names get ' 2', ' 3' ... ({})".format(
                [os.path.basename(p) for p in paths]))
         ok(not any(os.path.exists(p) for p in paths), "no returned path exists on disk")
+        ok(dlg._batch_path(folder, "Long", set(), overwrite=True) == os.path.join(folder, "Long.pdf"),
+           "overwrite: the existing file's own name is used")
+        ok(dlg._batch_ask_overwrite(os.path.join(folder, "nothing-here"), ["Lab::Long"]) is False,
+           "no question when none of the files exists yet")
 
         # a real batch into a temp folder
         out = os.path.join(folder, "out")
@@ -1126,18 +1142,39 @@ def check_batch_subdecks(col, load_addon, pick):
         saved = (mod.QDesktopServices, mod.QFileDialog.getExistingDirectory)
         mod.QDesktopServices = FakeDesktop
         mod.QFileDialog.getExistingDirectory = staticmethod(lambda *a, **k: out)
-        busy_seen = []
+        busy_seen, together, texts, bar = [], [0], set(), []
         orig_set = dlg._set_btns
         dlg._set_btns = lambda on: (busy_seen.append(on), orig_set(on))
-        try:
+
+        def run_batch(stop_after=None):
             dlg._on_export()
+            ok(dlg._batch is not None and dlg.busy_stop_btn.isVisibleTo(dlg.busy_hud),
+               "the batch is running and the loader offers Stop")
             end = time.time() + 240
             while (dlg._batch is not None) and time.time() < end:
                 app.processEvents()
-                time.sleep(0.02)
+                b = dlg._batch
+                if b is not None:
+                    together[0] = max(together[0], len(b["active"]))
+                    texts.add(dlg.busy_overlay_label.text())
+                    bar.append(dlg.busy_overlay_bar.value())
+                    if stop_after is not None and b["next"] >= stop_after and not b["stop"]:
+                        dlg.busy_stop_btn.click()
+                time.sleep(0.01)
+
+        try:
+            run_batch()
         finally:
-            mod.QDesktopServices, mod.QFileDialog.getExistingDirectory = saved
             dlg._set_btns = orig_set
+        workers = max(1, min(4, (os.cpu_count() or 2) // 2))
+        ok(together[0] == min(workers, 4), "renders run side by side ({} at once, {} allowed)".format(
+            together[0], workers))
+        ok("PDF 0 / 4" in texts and any(t.startswith("PDF ") and t != "PDF 0 / 4" for t in texts),
+           "the loader counts finished files ({})".format(sorted(texts)))
+        ok(bar == sorted(bar) and bar[-1] > bar[0], "the progress bar only moves forward ({} -> {})".format(
+            bar[0], bar[-1]))
+        ok(not dlg.busy_stop_btn.isVisibleTo(dlg.busy_hud) and dlg.busy_overlay_hint.text() == mod._t("busy_hint"),
+           "the loader is back to normal afterwards")
         files = sorted(os.listdir(out))
         ok(files == ["Dual.pdf", "Images.pdf", "Long.pdf", "Math.pdf"], "one PDF per target in the folder ({})".format(files))
         ok(all(os.path.getsize(os.path.join(out, f)) > 1000 for f in files), "the PDFs are not empty")
@@ -1147,6 +1184,16 @@ def check_batch_subdecks(col, load_addon, pick):
            "after the batch the dialog is idle and batch state is cleared")
         ok(busy_seen == [False, True], "buttons stay disabled for the whole batch ({})".format(busy_seen))
         ok(dlg._sel() == "Lab", "_sel() is the root deck again")
+
+        # Stop: the files already started are finished, the rest is left alone
+        out2 = os.path.join(folder, "out2")
+        os.mkdir(out2)
+        mod.QFileDialog.getExistingDirectory = staticmethod(lambda *a, **k: out2)
+        run_batch(stop_after=1)
+        files2 = sorted(os.listdir(out2))
+        ok(1 <= len(files2) < 4 and dlg._batch is None and dlg.export_btn.isEnabled(),
+           "Stop ends the batch after the started files ({})".format(files2))
+        mod.QDesktopServices, mod.QFileDialog.getExistingDirectory = saved
     finally:
         shutil.rmtree(folder, ignore_errors=True)
     dlg.close()
