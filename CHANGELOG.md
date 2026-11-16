@@ -5,7 +5,16 @@ All notable changes to the **AnkiPdffer Dev** add-on will be documented in this 
 ## [1.4.5] - 2026-11-16
 
 ### Added
-- **One PDF per subdeck**: with *Content → Subdecks → Separate PDF for each* switched on, *Export PDF* asks for a folder and writes one PDF for every subdeck of the deck selected at the top — a whole deck or any subdeck that has subdecks of its own (pick *CHIRURGIA* to get *KOLOKWIUM - ZESTAW 1.pdf*, *KOLOKWIUM - ZESTAW 2.pdf*, *ZALICZENIE - 2025_26.pdf* …). Every deck that holds cards gets its own file with just its own cards, named by its path below the selected deck, so no card appears twice. The current filter and all options apply; decks with no matching cards are skipped, and existing files are never overwritten (a number is added to the name instead). Progress shows as "2 of 7 · name" while it runs, and the folder opens when it is done. The switch is not remembered between sessions; Preview and Legacy HTML still show the whole selection.
+- **One PDF per subdeck**: with *Content → Subdecks → Separate PDF for each* switched on, *Export PDF* asks for a folder and writes one PDF for every subdeck of the deck selected at the top — a whole deck or any subdeck that has subdecks of its own (pick *CHIRURGIA* to get *KOLOKWIUM - ZESTAW 1.pdf*, *KOLOKWIUM - ZESTAW 2.pdf*, *ZALICZENIE - 2025_26.pdf* …). Every deck that holds cards gets its own file with just its own cards, named by its path below the selected deck, so no card appears twice. The current filter and all options apply, and decks with no matching cards are skipped. The switch is not remembered between sessions; Preview and Legacy HTML still show the whole selection.
+  - Several PDFs are rendered at the same time (up to four, depending on the processor), so a deck with many subdecks is done much sooner.
+  - The loader counts finished files (*PDF 3 / 12*) on a progress bar that shows real progress, names the decks being rendered, and has a *Stop* button: the files already started are finished, the rest is left alone.
+  - If some of the files are already in the folder, AnkiPdffer asks whether to *Replace* them or *Keep both* (the new ones get a number).
+  - The folder opens when the export is done.
+- **More in *Tools → AnkiPdffer***: *Export PDF*, *Preview PDF* and *One PDF per subdeck* for the current deck, *Last export log* and *Settings…*, next to *Open export dialog…* and *Quick Legacy HTML*.
+
+### Changed
+- **Legacy HTML image viewer** is rebuilt for speed and touch: a click opens the picture at once (no more short wait), wheel and trackpad zoom follow the pointer without the rubbery delay, pinch works on touch screens and in Safari, one finger or the mouse drags, a double click or double tap switches between fit and 100 %, and `+` `−` `0` `1` and the arrow keys work. The picture is refitted when the window is resized or the device is rotated, and it cannot be lost off-screen.
+- The loader belongs to the export window: it stays in front of Anki and moves with the window, but no longer floats above other applications — you can switch away and keep working while a PDF is made.
 
 ## [1.4.4] - 2026-11-01
 
