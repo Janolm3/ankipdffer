@@ -45,6 +45,7 @@ _STRINGS = {
         "deck_lbl": "Deck:",
         "subdeck_lbl": "Subdeck:",
         "entire_deck": "(Entire deck)",
+        "all_subdecks": "Every subdeck → separate PDFs",
         "tab_basic": "⚡ Basic",
         "tab_advanced": "🔧 Advanced",
         "tab_fields": "📋 Fields",
@@ -127,6 +128,11 @@ _STRINGS = {
         "msg_settings_reset": "Settings reset to defaults.",
         "msg_error": "Error.",
         "msg_pdf_saved": "PDF saved to:\n{}",
+        "dlg_batch_folder": "Choose a folder for the PDFs",
+        "busy_batch": "{i} of {n} · {name} — ",
+        "msg_batch_saved": "{n} PDFs saved to {folder}",
+        "msg_batch_failed": " ({n} failed)",
+        "msg_batch_none": "No subdeck has cards to export.",
         "msg_log_saved": "Saved: {}",
         "logs_title": "Logs",
         "btn_copy": "Copy",
@@ -150,6 +156,7 @@ _STRINGS = {
         "deck_lbl": "Deck:",
         "subdeck_lbl": "Subdeck:",
         "entire_deck": "(Cały deck)",
+        "all_subdecks": "Każdy poddeck → osobne PDF-y",
         "tab_basic": "⚡ Podstawowe",
         "tab_advanced": "🔧 Zaawansowane",
         "tab_fields": "📋 Pola",
@@ -233,6 +240,11 @@ _STRINGS = {
         "msg_settings_reset": "Przywrócono ustawienia domyślne.",
         "msg_error": "Błąd.",
         "msg_pdf_saved": "PDF zapisano w:\n{}",
+        "dlg_batch_folder": "Wybierz folder na pliki PDF",
+        "busy_batch": "{i} z {n} · {name} — ",
+        "msg_batch_saved": "Zapisano {n} PDF-ów w: {folder}",
+        "msg_batch_failed": " (błędy: {n})",
+        "msg_batch_none": "Żaden poddeck nie ma kart do wyeksportowania.",
         "msg_log_saved": "Zapisano: {}",
         "logs_title": "Logi",
         "btn_copy": "Kopiuj",
@@ -1265,6 +1277,9 @@ class PDFExportDialog(QDialog):
         self._busy_timer.timeout.connect(self._animate_busy)
         self._busy_val = 0
         self._base_busy_message = ""
+        self._batch = None  # state of a one-PDF-per-subdeck export while it runs
+        self._batch_deck = None  # the deck being exported by the batch (what _sel() returns)
+        self._batch_index = -1  # index of the "every subdeck" picker entry, -1 when absent
 
         screen = QApplication.primaryScreen()
         if screen:
@@ -2407,6 +2422,7 @@ class PDFExportDialog(QDialog):
         rn = self.deck_combo.currentText()
         if not rn:
             self.subdeck_combo.clear()
+            self._batch_index = -1
             self._load_fields()
             self._update_count()
             return
@@ -2414,6 +2430,11 @@ class PDFExportDialog(QDialog):
         self.subdeck_combo.clear()
         self.subdeck_combo.addItem(_t("entire_deck"), rn)
         pfx = rn + "::"
+        self._batch_index = -1
+        if any(d.name.startswith(pfx) for d in self._all_decks):
+            # empty data: _sel() keeps returning the root deck while this entry is selected
+            self.subdeck_combo.addItem(_t("all_subdecks"), "")
+            self._batch_index = self.subdeck_combo.count() - 1
         for d in self._all_decks:
             if d.name.startswith(pfx):
                 sub_name = d.name[len(pfx):]
@@ -2448,8 +2469,13 @@ class PDFExportDialog(QDialog):
         view.setMinimumWidth(min(560, widest + 36))
 
     def _sel(self):
+        if self._batch_deck:
+            return self._batch_deck
         d = self.subdeck_combo.currentData()
         return d if d else self.deck_combo.currentText()
+
+    def _batch_selected(self):
+        return self._batch_index >= 0 and self.subdeck_combo.currentIndex() == self._batch_index
 
     def _on_subdeck_changed(self, *_):
         self._load_fields()
@@ -3164,6 +3190,9 @@ class PDFExportDialog(QDialog):
             self.busy_overlay_label.setText(self._base_busy_message or "")
 
     def _set_busy_message(self, message):
+        if self._batch is not None:
+            b = self._batch
+            message = _t("busy_batch").format(i=b["i"], n=len(b["targets"]), name=b["name"]) + message
         self._base_busy_message = message
         self.busy_label.setText(message)
         self.busy_wrap.setVisible(True)
@@ -3303,6 +3332,9 @@ class PDFExportDialog(QDialog):
     def _on_export(self):
         if not self._precheck():
             return
+        if self._batch_selected():
+            self._on_batch_export()
+            return
         dn = self._sel()
         short = self._safe_filename(dn.split("::")[-1] if "::" in dn else dn)
         uid = str(uuid.uuid4()).split('-')[0][:6]
@@ -3315,10 +3347,17 @@ class PDFExportDialog(QDialog):
             sp += ".pdf"
         _store.update_settings({"export_dir": os.path.dirname(sp)})
         _store.save()
+        self._export_pdf_to(sp)
+
+    def _export_pdf_to(self, sp):
+        """Build the HTML for self._sel() and start rendering it to `sp` (asynchronous)."""
         logger.start("Export")
         self._font_debug_logged_modes = set()
         self._preview_pending = False
-        self._begin_busy(_t("busy_pdf_html"))
+        if self._batch is not None and self._busy_depth:
+            self._set_busy_message(_t("busy_pdf_html"))  # stay busy between decks
+        else:
+            self._begin_busy(_t("busy_pdf_html"))
         self.export_btn.setText(_t("generating"))
         try:
             QApplication.processEvents()
@@ -3338,6 +3377,70 @@ class PDFExportDialog(QDialog):
             self._save_debug_log()
             showWarning(str(e))
             self._reset()
+
+    # ------------------------------------------------------- batch: one PDF per subdeck
+    def _batch_targets(self):
+        """Direct children of the selected root deck that have cards under the current filter."""
+        pfx = self.deck_combo.currentText() + "::"
+        out = []
+        for d in self._all_decks:
+            if d.name.startswith(pfx) and "::" not in d.name[len(pfx):]:
+                try:
+                    if mw.col.find_cards(self._search_query(d.name)):
+                        out.append(d.name)
+                except Exception as e:
+                    logger.error("Batch search", e)
+        return out
+
+    def _batch_path(self, folder, deck, used):
+        """A new .pdf path in `folder` for `deck`: never an existing file nor one used in this batch."""
+        base = self._safe_filename(deck.split("::")[-1])
+        path = os.path.join(folder, base + ".pdf")
+        n = 2
+        while os.path.exists(path) or path in used:
+            path = os.path.join(folder, "{} {}.pdf".format(base, n))
+            n += 1
+        used.add(path)
+        return path
+
+    def _on_batch_export(self):
+        targets = self._batch_targets()
+        if not targets:
+            showWarning(_t("msg_batch_none"))
+            return
+        folder = QFileDialog.getExistingDirectory(self, _t("dlg_batch_folder"), self._export_dir())
+        if not folder:
+            return
+        _store.update_settings({"export_dir": folder})
+        _store.save()
+        self._batch = {"targets": targets, "folder": folder, "i": 0, "name": "", "used": set(),
+                       "saved": 0, "failed": 0, "path": None}
+        self._batch_next()
+
+    def _batch_next(self):
+        b = self._batch
+        deck = b["targets"][b["i"]]
+        b["i"] += 1
+        b["name"] = deck.split("::")[-1]
+        b["path"] = self._batch_path(b["folder"], deck, b["used"])
+        self._batch_deck = deck
+        self._export_pdf_to(b["path"])
+
+    def _batch_printed(self, success):
+        """One deck of the batch finished: count it and go on, or end the batch."""
+        b = self._batch
+        b["saved" if success else "failed"] += 1
+        if b["i"] < len(b["targets"]):
+            self._batch_next()
+            return
+        saved, failed, folder = b["saved"], b["failed"], b["folder"]
+        self._reset()  # also clears the batch state
+        if saved:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+        text = _t("msg_batch_saved").format(n=saved, folder=os.path.basename(folder) or folder)
+        if failed:
+            text += _t("msg_batch_failed").format(n=failed)
+        self._flash_status(text, folder)
 
     def _start_qt_pdf_export(self, path):
         logger.log("Generating Qt WebEngine fallback layout")
@@ -3682,7 +3785,9 @@ class PDFExportDialog(QDialog):
             logger.log("PDF: {} B".format(os.path.getsize(path)))
         logger.finish()
         self._save_debug_log()
-        self._reset()
+        batch = self._batch is not None
+        if not batch:
+            self._reset()
         for attr in ("temp_html_path", "temp_fallback_path"):
             tmp = getattr(self, attr, None)
             if tmp:
@@ -3691,6 +3796,9 @@ class PDFExportDialog(QDialog):
                 except OSError:
                     pass
                 setattr(self, attr, None)
+        if batch:
+            self._batch_printed(bool(success and os.path.exists(path)))
+            return
         preview = getattr(self, "_preview_pending", False)
         self._preview_pending = False
         if success:
@@ -3712,6 +3820,8 @@ class PDFExportDialog(QDialog):
             logger.log("Failed to save debug log: {}".format(e))
 
     def _reset(self):
+        self._batch = None
+        self._batch_deck = None
         self.export_btn.setText(_t("btn_export"))
         self._active_export_theme_index = None
         self._end_busy(force=True)
